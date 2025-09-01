@@ -93,3 +93,267 @@ Each MongoClient maintains its own connection pool
 Reusing clients improves performance and resource utilization
 
 So in terms of "opening connections," both your examples behave identically - they're just different ways to configure and reference the same underlying connection pooling system.
+
+Question 3:
+can u give an example to StartTransaction example using C# code
+
+Answer 3:
+using MongoDB.Driver;
+using MongoDB.Bson;
+using MongoDB.Bson.Serialization.Attributes;
+using System;
+using System.Threading.Tasks;
+
+// Example document models
+public class Account
+{
+    [BsonId]
+    public ObjectId Id { get; set; }
+    public string AccountNumber { get; set; }
+    public decimal Balance { get; set; }
+    public string Owner { get; set; }
+}
+
+public class TransferLog
+{
+    [BsonId]
+    public ObjectId Id { get; set; }
+    public string FromAccount { get; set; }
+    public string ToAccount { get; set; }
+    public decimal Amount { get; set; }
+    public DateTime TransferDate { get; set; }
+}
+
+public class MongoTransactionExample
+{
+    private readonly IMongoDatabase _database;
+    private readonly IMongoCollection<Account> _accounts;
+    private readonly IMongoCollection<TransferLog> _transferLogs;
+
+    public MongoTransactionExample(string connectionString, string databaseName)
+    {
+        var client = new MongoClient(connectionString);
+        _database = client.GetDatabase(databaseName);
+        _accounts = _database.GetCollection<Account>("accounts");
+        _transferLogs = _database.GetCollection<TransferLog>("transfer_logs");
+    }
+
+    // Example 1: Basic Transaction with Session
+    public async Task<bool> TransferMoneyBasicAsync(string fromAccount, string toAccount, decimal amount)
+    {
+        var client = _database.Client;
+        
+        using var session = await client.StartSessionAsync();
+        
+        try
+        {
+            session.StartTransaction();
+
+            // Find source account
+            var fromAccountDoc = await _accounts
+                .Find(session, a => a.AccountNumber == fromAccount)
+                .FirstOrDefaultAsync();
+
+            if (fromAccountDoc == null || fromAccountDoc.Balance < amount)
+            {
+                await session.AbortTransactionAsync();
+                return false;
+            }
+
+            // Find destination account
+            var toAccountDoc = await _accounts
+                .Find(session, a => a.AccountNumber == toAccount)
+                .FirstOrDefaultAsync();
+
+            if (toAccountDoc == null)
+            {
+                await session.AbortTransactionAsync();
+                return false;
+            }
+
+            // Update balances
+            await _accounts.UpdateOneAsync(
+                session,
+                a => a.AccountNumber == fromAccount,
+                Builders<Account>.Update.Inc(a => a.Balance, -amount)
+            );
+
+            await _accounts.UpdateOneAsync(
+                session,
+                a => a.AccountNumber == toAccount,
+                Builders<Account>.Update.Inc(a => a.Balance, amount)
+            );
+
+            // Log the transfer
+            await _transferLogs.InsertOneAsync(session, new TransferLog
+            {
+                FromAccount = fromAccount,
+                ToAccount = toAccount,
+                Amount = amount,
+                TransferDate = DateTime.UtcNow
+            });
+
+            await session.CommitTransactionAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Transaction failed: {ex.Message}");
+            await session.AbortTransactionAsync();
+            return false;
+        }
+    }
+
+    // Example 2: Transaction with Retry Logic (Recommended)
+    public async Task<bool> TransferMoneyWithRetryAsync(string fromAccount, string toAccount, decimal amount)
+    {
+        var client = _database.Client;
+        
+        using var session = await client.StartSessionAsync();
+
+        var transactionOptions = new TransactionOptions(
+            readPreference: ReadPreference.Primary,
+            readConcern: ReadConcern.Local,
+            writeConcern: WriteConcern.WMajority
+        );
+
+        try
+        {
+            var result = await session.WithTransactionAsync(
+                async (s, ct) =>
+                {
+                    // Your transactional operations here
+                    return await PerformTransferOperations(s, fromAccount, toAccount, amount);
+                },
+                transactionOptions
+            );
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Transaction with retry failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private async Task<bool> PerformTransferOperations(IClientSessionHandle session, 
+        string fromAccount, string toAccount, decimal amount)
+    {
+        // Find and validate source account
+        var fromAccountDoc = await _accounts
+            .Find(session, a => a.AccountNumber == fromAccount)
+            .FirstOrDefaultAsync();
+
+        if (fromAccountDoc == null)
+            throw new InvalidOperationException("Source account not found");
+        
+        if (fromAccountDoc.Balance < amount)
+            throw new InvalidOperationException("Insufficient funds");
+
+        // Find destination account
+        var toAccountDoc = await _accounts
+            .Find(session, a => a.AccountNumber == toAccount)
+            .FirstOrDefaultAsync();
+
+        if (toAccountDoc == null)
+            throw new InvalidOperationException("Destination account not found");
+
+        // Perform the transfer
+        await _accounts.UpdateOneAsync(
+            session,
+            a => a.AccountNumber == fromAccount,
+            Builders<Account>.Update.Inc(a => a.Balance, -amount)
+        );
+
+        await _accounts.UpdateOneAsync(
+            session,
+            a => a.AccountNumber == toAccount,
+            Builders<Account>.Update.Inc(a => a.Balance, amount)
+        );
+
+        // Log the transfer
+        await _transferLogs.InsertOneAsync(session, new TransferLog
+        {
+            FromAccount = fromAccount,
+            ToAccount = toAccount,
+            Amount = amount,
+            TransferDate = DateTime.UtcNow
+        });
+
+        return true;
+    }
+
+    // Example 3: Multiple Operations in Transaction
+    public async Task<bool> BulkAccountOperationsAsync()
+    {
+        var client = _database.Client;
+        
+        using var session = await client.StartSessionAsync();
+        
+        try
+        {
+            session.StartTransaction();
+
+            // Insert multiple accounts
+            var newAccounts = new[]
+            {
+                new Account { AccountNumber = "ACC001", Balance = 1000, Owner = "John Doe" },
+                new Account { AccountNumber = "ACC002", Balance = 2000, Owner = "Jane Smith" },
+                new Account { AccountNumber = "ACC003", Balance = 1500, Owner = "Bob Johnson" }
+            };
+
+            await _accounts.InsertManyAsync(session, newAccounts);
+
+            // Update existing accounts
+            await _accounts.UpdateManyAsync(
+                session,
+                a => a.Balance > 500,
+                Builders<Account>.Update.Inc(a => a.Balance, 50) // Add bonus
+            );
+
+            // Delete old accounts
+            await _accounts.DeleteManyAsync(
+                session,
+                a => a.Balance == 0
+            );
+
+            await session.CommitTransactionAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Bulk operations failed: {ex.Message}");
+            await session.AbortTransactionAsync();
+            return false;
+        }
+    }
+}
+
+// Usage Example
+public class Program
+{
+    public static async Task Main(string[] args)
+    {
+        var mongoExample = new MongoTransactionExample(
+            "mongodb://localhost:27017", 
+            "BankingSystem"
+        );
+
+        // Example usage
+        bool success = await mongoExample.TransferMoneyWithRetryAsync("ACC001", "ACC002", 100.50m);
+        
+        if (success)
+        {
+            Console.WriteLine("Transfer completed successfully!");
+        }
+        else
+        {
+            Console.WriteLine("Transfer failed!");
+        }
+
+        // Bulk operations example
+        bool bulkSuccess = await mongoExample.BulkAccountOperationsAsync();
+        Console.WriteLine($"Bulk operations: {(bulkSuccess ? "Success" : "Failed")}");
+    }
+}
