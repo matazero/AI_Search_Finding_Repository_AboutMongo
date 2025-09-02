@@ -1,1 +1,1506 @@
 MongoDB C# Aggregate Fluent API Example
+AggregateToCollectionAsync example is searched on AI
+---------------------------------------------------------------------
+AI Bot: Claude Sonnet 4
+
+Important Notes: I share AI answers here.
+
+
+Question :
+---------
+Ok I am going to provide an example for mongo c# api . I want u provide an example to me about AggregateToCollectionAsync  method using fluent api.  
+        [HttpGet("GetDistinctBrandsFromProductV2")]      
+        public async Task<List<string>> GetDistinctBrandsFromProductV2()
+        {
+            return await _aggregationService.GetDistinctBrandsFromProductAsyncV2();
+        }     public async Task<List<string>> GetDistinctBrandsFromProductAsyncV2()
+ {
+     var pipeline = new[]
+     {
+         // Group all documents and create a set of unique brands.
+         new BsonDocument("$group", new BsonDocument
+         {
+             { "_id", BsonNull.Value },
+             { "distinctBrands", new BsonDocument("$addToSet", "$brand") }
+         })
+     };
+     //  Execute the pipeline
+     var aggregationResult = await _collection.AggregateAsync<BsonDocument>(pipeline);
+     // Extract the list of cities from the result
+     var firstResult = await aggregationResult.FirstAsync();
+     var result = firstResult["distinctBrands"].AsBsonArray.Select(c => c.AsString).ToList();
+     return result;
+ }
+
+Answer:
+-------
+I'll provide you with an example of how to use AggregateToCollectionAsync with the MongoDB C# fluent API. This method is useful when you want to store aggregation results directly 
+into a new collection rather than just returning them.
+
+// Controller method
+[HttpPost("CreateDistinctBrandsCollection")]
+public async Task<IActionResult> CreateDistinctBrandsCollection()
+{
+    await _aggregationService.CreateDistinctBrandsCollectionAsync();
+    return Ok("Distinct brands collection created successfully");
+}
+
+// Service method using AggregateToCollectionAsync with fluent API
+public async Task CreateDistinctBrandsCollectionAsync()
+{
+    var outputCollectionName = "distinctBrands";
+    
+    // Using fluent API with AggregateToCollectionAsync
+    await _collection.Aggregate()
+        .Group(
+            id: (string)null, // Group all documents together
+            groupProjection: g => new BsonDocument
+            {
+                { "_id", BsonNull.Value },
+                { "brands", g.AddToSet(x => x.Brand) },
+                { "totalProducts", g.Sum(1) },
+                { "createdAt", DateTime.UtcNow }
+            }
+        )
+        .Project(new BsonDocument
+        {
+            { "_id", 0 }, // Exclude the _id field
+            { "brands", 1 },
+            { "totalProducts", 1 },
+            { "createdAt", 1 }
+        })
+        .ToCollectionAsync(outputCollectionName);
+}
+
+// Alternative example: Creating a collection with brand statistics
+public async Task CreateBrandStatisticsCollectionAsync()
+{
+    var outputCollectionName = "brandStatistics";
+    
+    await _collection.Aggregate()
+        .Group(
+            id: x => x.Brand, // Group by brand
+            groupProjection: g => new
+            {
+                Brand = g.Key,
+                ProductCount = g.Sum(1),
+                AveragePrice = g.Average(x => x.Price),
+                MinPrice = g.Min(x => x.Price),
+                MaxPrice = g.Max(x => x.Price)
+            }
+        )
+        .Sort(Builders<BsonDocument>.Sort.Descending("ProductCount"))
+        .ToCollectionAsync(outputCollectionName);
+}
+
+// Example with more complex aggregation pipeline
+public async Task CreateProductSummaryCollectionAsync()
+{
+    var outputCollectionName = "productSummary";
+    
+    await _collection.Aggregate()
+        .Match(Builders<Product>.Filter.Gt(x => x.Price, 0)) // Filter products with price > 0
+        .Group(
+            id: new { Brand = "$brand", Category = "$category" },
+            groupProjection: g => new BsonDocument
+            {
+                { "_id", new BsonDocument { { "brand", "$brand" }, { "category", "$category" } } },
+                { "brand", g.First(x => x.Brand) },
+                { "category", g.First(x => x.Category) },
+                { "productCount", g.Sum(1) },
+                { "averagePrice", g.Average(x => x.Price) },
+                { "totalValue", g.Sum(x => x.Price) }
+            }
+        )
+        .Sort(Builders<BsonDocument>.Sort.Descending("totalValue"))
+        .Limit(100) // Top 100 brand-category combinations
+        .Project(new BsonDocument
+        {
+            { "_id", 0 },
+            { "brand", 1 },
+            { "category", 1 },
+            { "productCount", 1 },
+            { "averagePrice", new BsonDocument("$round", new BsonArray { "$averagePrice", 2 }) },
+            { "totalValue", new BsonDocument("$round", new BsonArray { "$totalValue", 2 }) },
+            { "generatedAt", DateTime.UtcNow }
+        })
+        .ToCollectionAsync(outputCollectionName);
+}
+
+// Method to read from the created collection
+public async Task<List<BsonDocument>> GetDistinctBrandsFromCollectionAsync()
+{
+    var distinctBrandsCollection = _database.GetCollection<BsonDocument>("distinctBrands");
+    return await distinctBrandsCollection.Find(new BsonDocument()).ToListAsync();
+}
+
+// Method to drop the collection if needed
+public async Task DropDistinctBrandsCollectionAsync()
+{
+    await _database.DropCollectionAsync("distinctBrands");
+}
+
+// Assuming your Product model looks something like this:
+public class Product
+{
+    public ObjectId Id { get; set; }
+    public string Brand { get; set; }
+    public string Category { get; set; }
+    public decimal Price { get; set; }
+    public string Name { get; set; }
+}
+
+Answer continued:
+
+Key differences and advantages of using AggregateToCollectionAsync with fluent API:
+Benefits:
+
+Persistent Results: Instead of returning data to your application, the results are stored directly in a new MongoDB collection
+Performance: Great for large datasets where you want to materialize results for later querying
+Fluent Syntax: More readable and type-safe compared to BsonDocument approach
+Reusability: The created collection can be queried multiple times without re-running the aggregation
+
+Key Points:
+
+ToCollectionAsync() is the fluent API equivalent of the $out or $merge aggregation stages
+The method creates a new collection with the specified name
+If the collection already exists, it will be replaced by default
+You can use MergeAsync() instead if you want to merge results into an existing collection
+The fluent API provides better IntelliSense and compile-time checking
+
+When to use AggregateToCollectionAsync:
+
+When you need to materialize complex aggregation results for repeated access
+For ETL operations where you're transforming data for reporting
+When creating summary/statistics collections from raw data
+For batch processing scenarios where results need to persist
+
+The fluent API approach is much more maintainable and readable compared to constructing BsonDocument pipelines manually!
+
+AI gives wrong answer here. And I corrected him by asking new question.
+
+Question 2: 
+-----------
+I want example of AggregateToCollectionAsync<TResult>(PipelineDefinition<TDocument, TResult>, AggregateOptions, CancellationToken)
+Runs an aggregation pipeline whose results are written to a collection.
+
+Answer 2:
+-------- 
+using MongoDB.Bson;
+using MongoDB.Driver;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
+// Controller method
+[HttpPost("CreateBrandStatisticsCollection")]
+public async Task<IActionResult> CreateBrandStatisticsCollection(CancellationToken cancellationToken = default)
+{
+    try
+    {
+        await _aggregationService.CreateBrandStatisticsCollectionAsync(cancellationToken);
+        return Ok(new { message = "Brand statistics collection created successfully" });
+    }
+    catch (OperationCanceledException)
+    {
+        return StatusCode(499, "Operation was cancelled");
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = ex.Message });
+    }
+}
+
+// Service method using AggregateToCollectionAsync with all parameters
+public async Task CreateBrandStatisticsCollectionAsync(CancellationToken cancellationToken = default)
+{
+    var outputCollectionName = "brandStatistics";
+    
+    // Define the pipeline using PipelineDefinition
+    var pipeline = new[]
+    {
+        // Match products with valid prices
+        PipelineStageDefinitionBuilder.Match<Product>(
+            Builders<Product>.Filter.And(
+                Builders<Product>.Filter.Gt(x => x.Price, 0),
+                Builders<Product>.Filter.Ne(x => x.Brand, null)
+            )
+        ),
+        
+        // Group by brand and calculate statistics
+        PipelineStageDefinitionBuilder.Group<Product, BrandStatistic>(
+            x => x.Brand,
+            g => new BrandStatistic
+            {
+                Id = g.Key,
+                Brand = g.Key,
+                ProductCount = g.Sum(1),
+                AveragePrice = g.Average(x => x.Price),
+                MinPrice = g.Min(x => x.Price),
+                MaxPrice = g.Max(x => x.Price),
+                TotalValue = g.Sum(x => x.Price),
+                LastUpdated = DateTime.UtcNow
+            }
+        ),
+        
+        // Sort by total value descending
+        PipelineStageDefinitionBuilder.Sort<BrandStatistic>(
+            Builders<BrandStatistic>.Sort.Descending(x => x.TotalValue)
+        ),
+        
+        // Add calculated fields
+        PipelineStageDefinitionBuilder.AddFields<BrandStatistic>(
+            new BsonDocument
+            {
+                { "priceRange", new BsonDocument("$subtract", new BsonArray { "$maxPrice", "$minPrice" }) },
+                { "avgPriceRounded", new BsonDocument("$round", new BsonArray { "$averagePrice", 2 }) }
+            }
+        ),
+        
+        // Final projection
+        PipelineStageDefinitionBuilder.Project<BrandStatistic, BrandStatistic>(
+            Builders<BrandStatistic>.Projection
+                .Include(x => x.Brand)
+                .Include(x => x.ProductCount)
+                .Include(x => x.TotalValue)
+                .Include(x => x.LastUpdated)
+                .Include("avgPriceRounded")
+                .Include("priceRange")
+                .Exclude(x => x.Id)
+        ),
+        
+        // Output to collection (equivalent to $out)
+        PipelineStageDefinitionBuilder.Out<BrandStatistic>(outputCollectionName)
+    };
+
+    // Configure aggregation options
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true, // Allow using disk for large datasets
+        MaxTime = TimeSpan.FromMinutes(5), // Set maximum execution time
+        BatchSize = 1000, // Set batch size for cursor
+        Comment = "Creating brand statistics collection", // Add comment for debugging
+        Hint = "brand_1_price_1", // Use specific index if available
+        Collation = new Collation("en", strength: CollationStrength.Primary) // Case-insensitive sorting
+    };
+
+    // Execute the aggregation pipeline
+    await _collection.AggregateToCollectionAsync<BrandStatistic>(
+        pipeline, 
+        options, 
+        cancellationToken
+    );
+}
+
+// Alternative example using $merge instead of $out
+public async Task MergeBrandStatisticsCollectionAsync(CancellationToken cancellationToken = default)
+{
+    var outputCollectionName = "brandStatistics";
+    
+    var pipeline = new[]
+    {
+        PipelineStageDefinitionBuilder.Match<Product>(
+            Builders<Product>.Filter.Gt(x => x.Price, 0)
+        ),
+        
+        PipelineStageDefinitionBuilder.Group<Product, BrandStatistic>(
+            x => x.Brand,
+            g => new BrandStatistic
+            {
+                Id = g.Key,
+                Brand = g.Key,
+                ProductCount = g.Sum(1),
+                AveragePrice = g.Average(x => x.Price),
+                LastUpdated = DateTime.UtcNow
+            }
+        ),
+        
+        // Use $merge to merge results into existing collection
+        PipelineStageDefinitionBuilder.Merge<BrandStatistic>(
+            outputCollectionName,
+            new MergeStageOptions<BrandStatistic>
+            {
+                Let = new BsonDocument { { "newDoc", "$$ROOT" } },
+                WhenMatched = MergeStageWhenMatched.Replace,
+                WhenNotMatched = MergeStageWhenNotMatched.Insert
+            }
+        )
+    };
+
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(10),
+        Comment = "Merging brand statistics"
+    };
+
+    await _collection.AggregateToCollectionAsync<BrandStatistic>(
+        pipeline, 
+        options, 
+        cancellationToken
+    );
+}
+
+// Example with custom pipeline definition
+public async Task CreateCustomBrandReportAsync(CancellationToken cancellationToken = default)
+{
+    // Create custom pipeline definition
+    var pipelineDefinition = PipelineDefinition<Product, BrandReport>.Create(
+        new[]
+        {
+            PipelineStageDefinitionBuilder.Match<Product>(
+                Builders<Product>.Filter.And(
+                    Builders<Product>.Filter.Gte(x => x.CreatedDate, DateTime.UtcNow.AddDays(-30)),
+                    Builders<Product>.Filter.Ne(x => x.Brand, null)
+                )
+            ),
+            
+            PipelineStageDefinitionBuilder.Group<Product, BrandReport>(
+                x => x.Brand,
+                g => new BrandReport
+                {
+                    BrandName = g.Key,
+                    RecentProductCount = g.Sum(1),
+                    AveragePrice = g.Average(x => x.Price),
+                    Categories = g.AddToSet(x => x.Category),
+                    ReportDate = DateTime.UtcNow
+                }
+            ),
+            
+            PipelineStageDefinitionBuilder.Sort<BrandReport>(
+                Builders<BrandReport>.Sort.Descending(x => x.RecentProductCount)
+            ),
+            
+            PipelineStageDefinitionBuilder.Out<BrandReport>("monthlyBrandReport")
+        }
+    );
+
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(15),
+        BatchSize = 500,
+        Comment = "Monthly brand report generation",
+        // Enable explain mode for debugging (optional)
+        // Explain = ExplainVerbosity.ExecutionStats
+    };
+
+    // Execute with all parameters
+    await _collection.AggregateToCollectionAsync<BrandReport>(
+        pipelineDefinition,
+        options,
+        cancellationToken
+    );
+}
+
+// Method to handle cancellation and progress tracking
+public async Task CreateBrandCollectionWithProgressAsync(
+    IProgress<string> progress = null, 
+    CancellationToken cancellationToken = default)
+{
+    try
+    {
+        progress?.Report("Starting brand statistics aggregation...");
+        
+        var pipeline = PipelineDefinition<Product, BrandStatistic>.Create(
+            new[]
+            {
+                PipelineStageDefinitionBuilder.Match<Product>(
+                    Builders<Product>.Filter.Ne(x => x.Brand, null)
+                ),
+                
+                PipelineStageDefinitionBuilder.Group<Product, BrandStatistic>(
+                    x => x.Brand,
+                    g => new BrandStatistic
+                    {
+                        Brand = g.Key,
+                        ProductCount = g.Sum(1),
+                        AveragePrice = g.Average(x => x.Price),
+                        LastUpdated = DateTime.UtcNow
+                    }
+                ),
+                
+                PipelineStageDefinitionBuilder.Out<BrandStatistic>("brandStatistics")
+            }
+        );
+
+        var options = new AggregateOptions
+        {
+            AllowDiskUse = true,
+            MaxTime = TimeSpan.FromMinutes(10),
+            Comment = "Brand statistics with progress tracking"
+        };
+
+        progress?.Report("Executing aggregation pipeline...");
+        
+        await _collection.AggregateToCollectionAsync<BrandStatistic>(
+            pipeline,
+            options,
+            cancellationToken
+        );
+        
+        progress?.Report("Brand statistics collection created successfully!");
+    }
+    catch (OperationCanceledException)
+    {
+        progress?.Report("Operation was cancelled by user");
+        throw;
+    }
+    catch (MongoExecutionTimeoutException)
+    {
+        progress?.Report("Operation timed out");
+        throw;
+    }
+}
+
+// Model classes
+public class Product
+{
+    public ObjectId Id { get; set; }
+    public string Brand { get; set; }
+    public string Category { get; set; }
+    public decimal Price { get; set; }
+    public string Name { get; set; }
+    public DateTime CreatedDate { get; set; }
+}
+
+public class BrandStatistic
+{
+    public string Id { get; set; }
+    public string Brand { get; set; }
+    public int ProductCount { get; set; }
+    public double AveragePrice { get; set; }
+    public decimal MinPrice { get; set; }
+    public decimal MaxPrice { get; set; }
+    public decimal TotalValue { get; set; }
+    public DateTime LastUpdated { get; set; }
+}
+
+public class BrandReport
+{
+    public string BrandName { get; set; }
+    public int RecentProductCount { get; set; }
+    public double AveragePrice { get; set; }
+    public List<string> Categories { get; set; }
+    public DateTime ReportDate { get; set; }
+}
+
+This example demonstrates the full signature of AggregateToCollectionAsync<TResult> with:
+Key Features:
+
+PipelineDefinition<TDocument, TResult>: Strongly-typed pipeline definition that transforms Product documents into BrandStatistic results
+AggregateOptions: Comprehensive options including:
+
+AllowDiskUse: Enables disk usage for large datasets
+MaxTime: Sets execution timeout
+BatchSize: Controls cursor batch size
+Comment: Adds debugging information
+Hint: Suggests which index to use
+Collation: Defines sorting rules
+
+
+CancellationToken: Enables operation cancellation and timeout handling
+
+Main Differences from Your Original Code:
+
+Results are stored in a collection instead of returned to the application
+Uses strongly-typed models instead of BsonDocument
+Provides better error handling and cancellation support
+More scalable for large datasets
+Results persist and can be queried later
+
+Use Cases:
+
+ETL operations
+Report generation
+Data materialization for analytics
+Batch processing jobs
+Creating summary collections from raw data
+
+The created collection can then be queried normally using Find() or other MongoDB operations, making it perfect for scenarios where you need to repeatedly access aggregated results.
+
+The supplied code gave error. I asked Question 3.
+
+Question 3: 
+----------
+I got error : No overload for method 'Group' takes 2 arguments
+
+Answer 3:
+---------
+You're right! The Group method in the fluent API has a different signature. Let me provide the correct example using the proper MongoDB C# driver fluent API syntax:
+
+using MongoDB.Bson;
+using MongoDB.Driver;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
+// Controller method
+[HttpPost("CreateDistinctBrandsCollection")]
+public async Task<IActionResult> CreateDistinctBrandsCollection(CancellationToken cancellationToken = default)
+{
+    try
+    {
+        await _aggregationService.CreateDistinctBrandsCollectionAsync(cancellationToken);
+        return Ok(new { message = "Distinct brands collection created successfully" });
+    }
+    catch (OperationCanceledException)
+    {
+        return StatusCode(499, "Operation was cancelled");
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = ex.Message });
+    }
+}
+
+// Service method using AggregateToCollectionAsync with PipelineDefinition
+public async Task CreateDistinctBrandsCollectionAsync(CancellationToken cancellationToken = default)
+{
+    var outputCollectionName = "distinctBrands";
+    
+    // Create pipeline definition using PipelineDefinition.Create
+    var pipeline = PipelineDefinition<Product, BsonDocument>.Create(
+        new BsonDocument[]
+        {
+            new BsonDocument("$match", new BsonDocument
+            {
+                { "brand", new BsonDocument("$ne", BsonNull.Value) },
+                { "price", new BsonDocument("$gt", 0) }
+            }),
+            
+            new BsonDocument("$group", new BsonDocument
+            {
+                { "_id", BsonNull.Value },
+                { "distinctBrands", new BsonDocument("$addToSet", "$brand") },
+                { "totalProducts", new BsonDocument("$sum", 1) },
+                { "createdAt", new BsonDocument("$first", DateTime.UtcNow) }
+            }),
+            
+            new BsonDocument("$project", new BsonDocument
+            {
+                { "_id", 0 },
+                { "brands", "$distinctBrands" },
+                { "totalProducts", 1 },
+                { "createdAt", 1 },
+                { "brandCount", new BsonDocument("$size", "$distinctBrands") }
+            }),
+            
+            new BsonDocument("$out", outputCollectionName)
+        }
+    );
+
+    // Configure aggregation options
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(5),
+        BatchSize = 1000,
+        Comment = "Creating distinct brands collection with statistics",
+        Collation = new Collation("en", strength: CollationStrength.Primary)
+    };
+
+    // Execute using AggregateToCollectionAsync with all parameters
+    await _collection.AggregateToCollectionAsync<BsonDocument>(
+        pipeline, 
+        options, 
+        cancellationToken
+    );
+}
+
+// Alternative example with strongly-typed result using Builders
+public async Task CreateBrandStatisticsCollectionAsync(CancellationToken cancellationToken = default)
+{
+    var outputCollectionName = "brandStatistics";
+    
+    // Using PipelineDefinition with Builders for type safety
+    var matchStage = PipelineStageDefinitionBuilder.Match<Product>(
+        Builders<Product>.Filter.And(
+            Builders<Product>.Filter.Gt(x => x.Price, 0),
+            Builders<Product>.Filter.Ne(x => x.Brand, null)
+        )
+    );
+    
+    var groupStage = PipelineStageDefinitionBuilder.Group<Product, BrandStatistic>(
+        x => x.Brand,
+        Builders<BrandStatistic>.Projection.Expression(g => new BrandStatistic
+        {
+            Id = g.Key,
+            Brand = g.Key,
+            ProductCount = g.Count(),
+            AveragePrice = g.Average(x => x.Price),
+            MinPrice = g.Min(x => x.Price),
+            MaxPrice = g.Max(x => x.Price),
+            TotalValue = g.Sum(x => x.Price),
+            LastUpdated = DateTime.UtcNow
+        })
+    );
+    
+    var sortStage = PipelineStageDefinitionBuilder.Sort<BrandStatistic>(
+        Builders<BrandStatistic>.Sort.Descending(x => x.TotalValue)
+    );
+    
+    var outStage = PipelineStageDefinitionBuilder.Out<BrandStatistic>(outputCollectionName);
+
+    // Create pipeline from stages
+    var pipeline = PipelineDefinition<Product, BrandStatistic>.Create(
+        new IPipelineStageDefinition[] { matchStage, groupStage, sortStage, outStage }
+    );
+
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(10),
+        BatchSize = 500,
+        Comment = "Brand statistics aggregation with typed pipeline"
+    };
+
+    await _collection.AggregateToCollectionAsync<BrandStatistic>(
+        pipeline,
+        options,
+        cancellationToken
+    );
+}
+
+// Example using $merge instead of $out for incremental updates
+public async Task MergeBrandStatisticsAsync(CancellationToken cancellationToken = default)
+{
+    var outputCollectionName = "brandStatistics";
+    
+    var pipeline = PipelineDefinition<Product, BrandStatistic>.Create(
+        new BsonDocument[]
+        {
+            new BsonDocument("$match", new BsonDocument
+            {
+                { "brand", new BsonDocument("$ne", BsonNull.Value) },
+                { "createdDate", new BsonDocument("$gte", DateTime.UtcNow.AddDays(-1)) } // Only recent products
+            }),
+            
+            new BsonDocument("$group", new BsonDocument
+            {
+                { "_id", "$brand" },
+                { "brand", new BsonDocument("$first", "$brand") },
+                { "productCount", new BsonDocument("$sum", 1) },
+                { "averagePrice", new BsonDocument("$avg", "$price") },
+                { "lastUpdated", new BsonDocument("$first", DateTime.UtcNow) }
+            }),
+            
+            new BsonDocument("$merge", new BsonDocument
+            {
+                { "into", outputCollectionName },
+                { "on", "_id" },
+                { "whenMatched", "replace" },
+                { "whenNotMatched", "insert" }
+            })
+        }
+    );
+
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(15),
+        Comment = "Incremental brand statistics merge"
+    };
+
+    await _collection.AggregateToCollectionAsync<BrandStatistic>(
+        pipeline,
+        options,
+        cancellationToken
+    );
+}
+
+// Example with error handling and retry logic
+public async Task CreateBrandCollectionWithRetryAsync(CancellationToken cancellationToken = default)
+{
+    const int maxRetries = 3;
+    var retryCount = 0;
+    
+    while (retryCount < maxRetries)
+    {
+        try
+        {
+            var pipeline = PipelineDefinition<Product, BsonDocument>.Create(
+                new BsonDocument[]
+                {
+                    new BsonDocument("$group", new BsonDocument
+                    {
+                        { "_id", "$brand" },
+                        { "brand", new BsonDocument("$first", "$brand") },
+                        { "count", new BsonDocument("$sum", 1) }
+                    }),
+                    new BsonDocument("$sort", new BsonDocument("count", -1)),
+                    new BsonDocument("$out", "brandCounts")
+                }
+            );
+
+            var options = new AggregateOptions
+            {
+                AllowDiskUse = true,
+                MaxTime = TimeSpan.FromMinutes(5),
+                Comment = $"Brand collection creation attempt {retryCount + 1}"
+            };
+
+            await _collection.AggregateToCollectionAsync<BsonDocument>(
+                pipeline,
+                options,
+                cancellationToken
+            );
+            
+            break; // Success, exit retry loop
+        }
+        catch (MongoExecutionTimeoutException) when (retryCount < maxRetries - 1)
+        {
+            retryCount++;
+            await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, retryCount)), cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw; // Don't retry on cancellation
+        }
+    }
+}
+
+// Model classes
+public class Product
+{
+    public ObjectId Id { get; set; }
+    public string Brand { get; set; }
+    public string Category { get; set; }
+    public decimal Price { get; set; }
+    public string Name { get; set; }
+    public DateTime CreatedDate { get; set; }
+}
+
+public class BrandStatistic
+{
+    public string Id { get; set; }
+    public string Brand { get; set; }
+    public int ProductCount { get; set; }
+    public double AveragePrice { get; set; }
+    public decimal MinPrice { get; set; }
+    public decimal MaxPrice { get; set; }
+    public decimal TotalValue { get; set; }
+    public DateTime LastUpdated { get; set; }
+}
+
+public class BrandReport
+{
+    public string BrandName { get; set; }
+    public int RecentProductCount { get; set; }
+    public double AveragePrice { get; set; }
+    public List<string> Categories { get; set; }
+    public DateTime ReportDate { get; set; }
+}
+
+Code ∙ Version 2 
+The corrected example shows the proper way to use AggregateToCollectionAsync<TResult> with all three parameters:
+
+Key Corrections:
+
+PipelineDefinition: Used PipelineDefinition<TDocument, TResult>.Create() to properly define the pipeline
+Pipeline Stages: Used PipelineStageDefinitionBuilder methods or raw BsonDocument arrays
+Proper Syntax: The fluent API aggregation methods have specific signatures that don't always match the traditional grouping syntax
+The Method Signature:
+
+csharp
+Task AggregateToCollectionAsync<TResult>(
+    PipelineDefinition<TDocument, TResult> pipeline,
+    AggregateOptions options = null,
+    CancellationToken cancellationToken = default
+)
+Important Notes:
+
+The pipeline must end with either $out or $merge stage to specify the output collection
+$out replaces the entire target collection
+$merge allows for more sophisticated merging strategies
+The TResult type parameter should match the final stage output type
+Use BsonDocument as TResult when the output structure is dynamic
+This approach gives you full control over the aggregation pipeline while maintaining type safety where possible.
+
+I got another error. Then ask again .
+
+Quesiton 4: 
+-----------
+I asked below error.
+'BrandStatisticDto' does not contain a definition for 'Key' and no accessible extension method 'Key' accepting a first argument of type 'BrandStatisticDto' could be found (are you missing a using directive or an assembly reference?)
+
+Answer 4:
+---------
+You're getting that error because the Group method syntax I used is incorrect. The Key property is available in the grouping expression, not in the projection. Let me fix this with the correct MongoDB C# driver syntax:
+
+using MongoDB.Bson;
+using MongoDB.Driver;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
+// Controller method
+[HttpPost("CreateDistinctBrandsCollection")]
+public async Task<IActionResult> CreateDistinctBrandsCollection(CancellationToken cancellationToken = default)
+{
+    try
+    {
+        await _aggregationService.CreateDistinctBrandsCollectionAsync(cancellationToken);
+        return Ok(new { message = "Distinct brands collection created successfully" });
+    }
+    catch (OperationCanceledException)
+    {
+        return StatusCode(499, "Operation was cancelled");
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = ex.Message });
+    }
+}
+
+// Service method using AggregateToCollectionAsync with PipelineDefinition
+public async Task CreateDistinctBrandsCollectionAsync(CancellationToken cancellationToken = default)
+{
+    var outputCollectionName = "distinctBrands";
+    
+    // Create pipeline definition using PipelineDefinition.Create
+    var pipeline = PipelineDefinition<Product, BsonDocument>.Create(
+        new BsonDocument[]
+        {
+            new BsonDocument("$match", new BsonDocument
+            {
+                { "brand", new BsonDocument("$ne", BsonNull.Value) },
+                { "price", new BsonDocument("$gt", 0) }
+            }),
+            
+            new BsonDocument("$group", new BsonDocument
+            {
+                { "_id", BsonNull.Value },
+                { "distinctBrands", new BsonDocument("$addToSet", "$brand") },
+                { "totalProducts", new BsonDocument("$sum", 1) },
+                { "createdAt", new BsonDocument("$first", DateTime.UtcNow) }
+            }),
+            
+            new BsonDocument("$project", new BsonDocument
+            {
+                { "_id", 0 },
+                { "brands", "$distinctBrands" },
+                { "totalProducts", 1 },
+                { "createdAt", 1 },
+                { "brandCount", new BsonDocument("$size", "$distinctBrands") }
+            }),
+            
+            new BsonDocument("$out", outputCollectionName)
+        }
+    );
+
+    // Configure aggregation options
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(5),
+        BatchSize = 1000,
+        Comment = "Creating distinct brands collection with statistics",
+        Collation = new Collation("en", strength: CollationStrength.Primary)
+    };
+
+    // Execute using AggregateToCollectionAsync with all parameters
+    await _collection.AggregateToCollectionAsync<BsonDocument>(
+        pipeline, 
+        options, 
+        cancellationToken
+    );
+}
+
+// Alternative example with strongly-typed result using Builders
+public async Task CreateBrandStatisticsCollectionAsync(CancellationToken cancellationToken = default)
+{
+    var outputCollectionName = "brandStatistics";
+    
+    // Using PipelineDefinition with Builders for type safety
+    var matchStage = PipelineStageDefinitionBuilder.Match<Product>(
+        Builders<Product>.Filter.And(
+            Builders<Product>.Filter.Gt(x => x.Price, 0),
+            Builders<Product>.Filter.Ne(x => x.Brand, null)
+        )
+    );
+    
+    var groupStage = new BsonDocument("$group", new BsonDocument
+    {
+        { "_id", "$brand" },
+        { "brand", new BsonDocument("$first", "$brand") },
+        { "productCount", new BsonDocument("$sum", 1) },
+        { "averagePrice", new BsonDocument("$avg", "$price") },
+        { "minPrice", new BsonDocument("$min", "$price") },
+        { "maxPrice", new BsonDocument("$max", "$price") },
+        { "totalValue", new BsonDocument("$sum", "$price") },
+        { "lastUpdated", new BsonDocument("$first", DateTime.UtcNow) }
+    });
+    
+    var sortStage = PipelineStageDefinitionBuilder.Sort<BrandStatistic>(
+        Builders<BrandStatistic>.Sort.Descending(x => x.TotalValue)
+    );
+    
+    var outStage = PipelineStageDefinitionBuilder.Out<BrandStatistic>(outputCollectionName);
+
+    // Create pipeline from stages
+    var pipeline = PipelineDefinition<Product, BrandStatistic>.Create(
+        new BsonDocument[]
+        {
+            matchStage.Render(_collection.DocumentSerializer, _collection.Settings.SerializerRegistry),
+            groupStage,
+            sortStage.Render(BsonSerializer.SerializerRegistry.GetSerializer<BrandStatistic>(), _collection.Settings.SerializerRegistry),
+            outStage.Render(BsonSerializer.SerializerRegistry.GetSerializer<BrandStatistic>(), _collection.Settings.SerializerRegistry)
+        }
+    );
+
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(10),
+        BatchSize = 500,
+        Comment = "Brand statistics aggregation with typed pipeline"
+    };
+
+    await _collection.AggregateToCollectionAsync<BrandStatistic>(
+        pipeline,
+        options,
+        cancellationToken
+    );
+}
+
+// Example using $merge instead of $out for incremental updates
+public async Task MergeBrandStatisticsAsync(CancellationToken cancellationToken = default)
+{
+    var outputCollectionName = "brandStatistics";
+    
+    var pipeline = PipelineDefinition<Product, BrandStatistic>.Create(
+        new BsonDocument[]
+        {
+            new BsonDocument("$match", new BsonDocument
+            {
+                { "brand", new BsonDocument("$ne", BsonNull.Value) },
+                { "createdDate", new BsonDocument("$gte", DateTime.UtcNow.AddDays(-1)) } // Only recent products
+            }),
+            
+            new BsonDocument("$group", new BsonDocument
+            {
+                { "_id", "$brand" },
+                { "brand", new BsonDocument("$first", "$brand") },
+                { "productCount", new BsonDocument("$sum", 1) },
+                { "averagePrice", new BsonDocument("$avg", "$price") },
+                { "lastUpdated", new BsonDocument("$first", DateTime.UtcNow) }
+            }),
+            
+            new BsonDocument("$merge", new BsonDocument
+            {
+                { "into", outputCollectionName },
+                { "on", "_id" },
+                { "whenMatched", "replace" },
+                { "whenNotMatched", "insert" }
+            })
+        }
+    );
+
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(15),
+        Comment = "Incremental brand statistics merge"
+    };
+
+    await _collection.AggregateToCollectionAsync<BrandStatistic>(
+        pipeline,
+        options,
+        cancellationToken
+    );
+}
+
+// Example with error handling and retry logic
+public async Task CreateBrandCollectionWithRetryAsync(CancellationToken cancellationToken = default)
+{
+    const int maxRetries = 3;
+    var retryCount = 0;
+    
+    while (retryCount < maxRetries)
+    {
+        try
+        {
+            var pipeline = PipelineDefinition<Product, BsonDocument>.Create(
+                new BsonDocument[]
+                {
+                    new BsonDocument("$group", new BsonDocument
+                    {
+                        { "_id", "$brand" },
+                        { "brand", new BsonDocument("$first", "$brand") },
+                        { "count", new BsonDocument("$sum", 1) }
+                    }),
+                    new BsonDocument("$sort", new BsonDocument("count", -1)),
+                    new BsonDocument("$out", "brandCounts")
+                }
+            );
+
+            var options = new AggregateOptions
+            {
+                AllowDiskUse = true,
+                MaxTime = TimeSpan.FromMinutes(5),
+                Comment = $"Brand collection creation attempt {retryCount + 1}"
+            };
+
+            await _collection.AggregateToCollectionAsync<BsonDocument>(
+                pipeline,
+                options,
+                cancellationToken
+            );
+            
+            break; // Success, exit retry loop
+        }
+        catch (MongoExecutionTimeoutException) when (retryCount < maxRetries - 1)
+        {
+            retryCount++;
+            await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, retryCount)), cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw; // Don't retry on cancellation
+        }
+    }
+}
+
+// Model classes
+public class Product
+{
+    public ObjectId Id { get; set; }
+    public string Brand { get; set; }
+    public string Category { get; set; }
+    public decimal Price { get; set; }
+    public string Name { get; set; }
+    public DateTime CreatedDate { get; set; }
+}
+
+public class BrandStatistic
+{
+    public string Id { get; set; }
+    public string Brand { get; set; }
+    public int ProductCount { get; set; }
+    public double AveragePrice { get; set; }
+    public decimal MinPrice { get; set; }
+    public decimal MaxPrice { get; set; }
+    public decimal TotalValue { get; set; }
+    public DateTime LastUpdated { get; set; }
+}
+
+public class BrandReport
+{
+    public string BrandName { get; set; }
+    public int RecentProductCount { get; set; }
+    public double AveragePrice { get; set; }
+    public List<string> Categories { get; set; }
+    public DateTime ReportDate { get; set; }
+}
+
+He offers another extre solution :
+
+using MongoDB.Bson;
+using MongoDB.Driver;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
+// Controller method
+[HttpPost("CreateDistinctBrandsCollection")]
+public async Task<IActionResult> CreateDistinctBrandsCollection(CancellationToken cancellationToken = default)
+{
+    try
+    {
+        await _aggregationService.CreateDistinctBrandsCollectionAsync(cancellationToken);
+        return Ok(new { message = "Distinct brands collection created successfully" });
+    }
+    catch (OperationCanceledException)
+    {
+        return StatusCode(499, "Operation was cancelled");
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = ex.Message });
+    }
+}
+
+// Method 1: Using BsonDocument pipeline (most straightforward)
+public async Task CreateDistinctBrandsCollectionAsync(CancellationToken cancellationToken = default)
+{
+    var outputCollectionName = "distinctBrands";
+    
+    // Create pipeline using BsonDocument array
+    var pipeline = PipelineDefinition<Product, BsonDocument>.Create(
+        new BsonDocument[]
+        {
+            new BsonDocument("$match", new BsonDocument
+            {
+                { "brand", new BsonDocument("$ne", BsonNull.Value) },
+                { "price", new BsonDocument("$gt", 0) }
+            }),
+            
+            new BsonDocument("$group", new BsonDocument
+            {
+                { "_id", BsonNull.Value },
+                { "distinctBrands", new BsonDocument("$addToSet", "$brand") },
+                { "totalProducts", new BsonDocument("$sum", 1) },
+                { "createdAt", DateTime.UtcNow }
+            }),
+            
+            new BsonDocument("$project", new BsonDocument
+            {
+                { "_id", 0 },
+                { "brands", "$distinctBrands" },
+                { "totalProducts", 1 },
+                { "createdAt", 1 },
+                { "brandCount", new BsonDocument("$size", "$distinctBrands") }
+            }),
+            
+            new BsonDocument("$out", outputCollectionName)
+        }
+    );
+
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(5),
+        BatchSize = 1000,
+        Comment = "Creating distinct brands collection"
+    };
+
+    await _collection.AggregateToCollectionAsync<BsonDocument>(
+        pipeline, 
+        options, 
+        cancellationToken
+    );
+}
+
+// Method 2: Using string-based pipeline (alternative approach)
+public async Task CreateBrandStatisticsCollectionAsync(CancellationToken cancellationToken = default)
+{
+    var outputCollectionName = "brandStatistics";
+    
+    // Define pipeline as string array (useful for complex aggregations)
+    var pipelineString = @"[
+        { '$match': { 'brand': { '$ne': null }, 'price': { '$gt': 0 } } },
+        { '$group': {
+            '_id': '$brand',
+            'brand': { '$first': '$brand' },
+            'productCount': { '$sum': 1 },
+            'averagePrice': { '$avg': '$price' },
+            'minPrice': { '$min': '$price' },
+            'maxPrice': { '$max': '$price' },
+            'totalValue': { '$sum': '$price' },
+            'lastUpdated': { '$first': '" + DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ") + @"' }
+        }},
+        { '$sort': { 'totalValue': -1 } },
+        { '$out': '" + outputCollectionName + @"' }
+    ]";
+    
+    var pipeline = PipelineDefinition<Product, BsonDocument>.Create(
+        BsonSerializer.Deserialize<BsonDocument[]>(pipelineString)
+    );
+
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(10),
+        Comment = "Brand statistics with string pipeline"
+    };
+
+    await _collection.AggregateToCollectionAsync<BsonDocument>(
+        pipeline,
+        options,
+        cancellationToken
+    );
+}
+
+// Method 3: Using $merge for incremental updates
+public async Task MergeBrandStatisticsAsync(CancellationToken cancellationToken = default)
+{
+    var outputCollectionName = "brandStatistics";
+    
+    var pipeline = PipelineDefinition<Product, BsonDocument>.Create(
+        new BsonDocument[]
+        {
+            new BsonDocument("$match", new BsonDocument
+            {
+                { "brand", new BsonDocument("$ne", BsonNull.Value) },
+                { "price", new BsonDocument("$gt", 0) }
+            }),
+            
+            new BsonDocument("$group", new BsonDocument
+            {
+                { "_id", "$brand" },
+                { "brand", new BsonDocument("$first", "$brand") },
+                { "productCount", new BsonDocument("$sum", 1) },
+                { "averagePrice", new BsonDocument("$avg", "$price") },
+                { "totalValue", new BsonDocument("$sum", "$price") },
+                { "lastUpdated", DateTime.UtcNow }
+            }),
+            
+            new BsonDocument("$merge", new BsonDocument
+            {
+                { "into", outputCollectionName },
+                { "on", "_id" }, // Match on _id field
+                { "whenMatched", "replace" }, // Replace existing documents
+                { "whenNotMatched", "insert" } // Insert new documents
+            })
+        }
+    );
+
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(15),
+        BatchSize = 1000,
+        Comment = "Merge brand statistics incrementally"
+    };
+
+    await _collection.AggregateToCollectionAsync<BsonDocument>(
+        pipeline,
+        options,
+        cancellationToken
+    );
+}
+
+// Method 4: Simple distinct brands collection (similar to your original)
+public async Task CreateSimpleDistinctBrandsAsync(CancellationToken cancellationToken = default)
+{
+    var pipeline = PipelineDefinition<Product, BsonDocument>.Create(
+        new BsonDocument[]
+        {
+            new BsonDocument("$group", new BsonDocument
+            {
+                { "_id", BsonNull.Value },
+                { "distinctBrands", new BsonDocument("$addToSet", "$brand") }
+            }),
+            new BsonDocument("$out", "distinctBrands")
+        }
+    );
+
+    var options = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(5)
+    };
+
+    await _collection.AggregateToCollectionAsync<BsonDocument>(
+        pipeline,
+        options,
+        cancellationToken
+    );
+}
+
+// Method to read from created collections
+public async Task<List<BsonDocument>> GetBrandStatisticsAsync()
+{
+    var brandStatsCollection = _database.GetCollection<BsonDocument>("brandStatistics");
+    return await brandStatsCollection.Find(new BsonDocument()).ToListAsync();
+}
+
+// Method to drop collections
+public async Task DropBrandCollectionsAsync()
+{
+    await _database.DropCollectionAsync("distinctBrands");
+    await _database.DropCollectionAsync("brandStatistics");
+}
+
+// Model classes
+public class Product
+{
+    public ObjectId Id { get; set; }
+    public string Brand { get; set; }
+    public string Category { get; set; }
+    public decimal Price { get; set; }
+    public string Name { get; set; }
+    public DateTime CreatedDate { get; set; }
+}
+
+public class BrandStatisticDto
+{
+    public string Id { get; set; }
+    public string Brand { get; set; }
+    public int ProductCount { get; set; }
+    public double AveragePrice { get; set; }
+    public decimal MinPrice { get; set; }
+    public decimal MaxPrice { get; set; }
+    public decimal TotalValue { get; set; }
+    public DateTime LastUpdated { get; set; }
+
+The corrected examples now use the proper MongoDB C# driver syntax. The key points:
+Main Fixes:
+
+Removed incorrect Group syntax with lambda expressions that don't exist in the fluent API
+Used BsonDocument arrays to define pipeline stages, which is the most reliable approach
+Proper PipelineDefinition.Create() usage with BsonDocument[]
+
+Why This Works:
+
+AggregateToCollectionAsync expects a PipelineDefinition<TDocument, TResult>
+The easiest way to create this is using BsonDocument arrays with raw MongoDB aggregation syntax
+The pipeline must end with $out or $merge to specify the output collection
+TResult should be BsonDocument for flexibility, or a strongly-typed class if the output structure is predictable
+
+Best Practices:
+
+Use BsonDocument approach for complex aggregations
+Use $out to replace the entire collection
+Use $merge for incremental updates or upserting
+Always include proper error handling and cancellation support
+
+This approach avoids the fluent API grouping issues while still using PipelineDefinition as required by the method signature.
+
+At the end of this search. What I implemented is  :
+Those are working codes.
+Create new collections on database including aggregate values to Product table.
+
+Controller side:
+---------------
+  // AggregateToCollectionAsync kullanan metod sonradan eklendi.
+
+  [HttpPost("BrandStatisticsAggregateToCollection")]
+  public async Task<IActionResult> BrandStatisticsAggregateToCollection(CancellationToken cancellationToken = default)
+  {
+      try
+      {
+          await _aggregationService.BrandStatisticsAggregateToCollectionAsync(cancellationToken);
+          return Ok(new { message = "Brand statistics collection created successfully" });
+      }
+      catch (OperationCanceledException)
+      {
+          return StatusCode(499, "Operation was cancelled");
+      }
+      catch (Exception ex)
+      {
+          return StatusCode(500, new { error = ex.Message });
+      }
+  }
+
+  [HttpPost("BrandStatisticsAggregateToCollectionV2")]
+  public async Task<IActionResult> BrandStatisticsAggregateToCollectionV2(CancellationToken cancellationToken = default)
+  {
+      try
+      {
+          await _aggregationService.BrandStatisticsAggregateToCollectionAsyncV2(cancellationToken);
+          return Ok(new { message = "Brand statistics collection created successfully" });
+      }
+      catch (OperationCanceledException)
+      {
+          return StatusCode(499, "Operation was cancelled");
+      }
+      catch (Exception ex)
+      {
+          return StatusCode(500, new { error = ex.Message });
+      }
+  }
+
+Service Side:
+-------------
+    // Service method using AggregateToCollectionAsync with PipelineDefinition
+    public async Task BrandStatisticsAggregateToCollectionAsync(CancellationToken cancellationToken = default)
+    {
+        var outputCollectionName = "distinctBrands";
+
+        // Create pipeline definition using PipelineDefinition.Create
+        var pipeline = PipelineDefinition<Product, BsonDocument>.Create(
+            new BsonDocument[]
+            {
+        new BsonDocument("$match", new BsonDocument
+        {
+            { "brand", new BsonDocument("$ne", BsonNull.Value) },
+            { "price", new BsonDocument("$gt", 0) }
+        }),
+
+        new BsonDocument("$group", new BsonDocument
+        {
+            { "_id", BsonNull.Value },
+            { "distinctBrands", new BsonDocument("$addToSet", "$brand") },
+            { "totalProducts", new BsonDocument("$sum", 1) },
+            { "createdAt", new BsonDocument("$first", DateTime.UtcNow) }
+        }),
+
+        new BsonDocument("$project", new BsonDocument
+        {
+            { "_id", 0 },
+            { "brands", "$distinctBrands" },
+            { "totalProducts", 1 },
+            { "createdAt", 1 },
+            { "brandCount", new BsonDocument("$size", "$distinctBrands") }
+        }),
+
+        new BsonDocument("$out", outputCollectionName)
+            }
+        );
+
+        // Configure aggregation options
+        var options = new AggregateOptions
+        {
+            AllowDiskUse = true,
+            MaxTime = TimeSpan.FromMinutes(5),
+            BatchSize = 1000,
+            Comment = "Creating distinct brands collection with statistics",
+            Collation = new Collation("en", strength: CollationStrength.Primary)
+        };
+
+        // Execute using AggregateToCollectionAsync with all parameters
+        await _collection.AggregateToCollectionAsync<BsonDocument>(
+            pipeline,
+            options,
+            cancellationToken
+        );
+    }
+
+    // Alternative example with strongly-typed result using Builders  
+    // Service method using AggregateToCollectionAsync  version2 
+    public async Task BrandStatisticsAggregateToCollectionAsyncV2(CancellationToken cancellationToken = default)
+    {
+        var outputCollectionName = "brandStatistics";
+
+        // Define pipeline as string array (useful for complex aggregations)
+        var pipelineString = @"[
+    { '$match': { 'brand': { '$ne': null }, 'price': { '$gt': 0 } } },
+    { '$group': {
+        '_id': '$brand',
+        'brand': { '$first': '$brand' },
+        'productCount': { '$sum': 1 },
+        'averagePrice': { '$avg': '$price' },
+        'minPrice': { '$min': '$price' },
+        'maxPrice': { '$max': '$price' },
+        'totalValue': { '$sum': '$price' },
+        'lastUpdated': { '$first': '" + DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ") + @"' }
+    }},
+    { '$sort': { 'totalValue': -1 } },
+    { '$out': '" + outputCollectionName + @"' }
+]";
+
+        var pipeline = PipelineDefinition<Product, BsonDocument>.Create(
+            BsonSerializer.Deserialize<BsonDocument[]>(pipelineString)
+        );
+
+        var options = new AggregateOptions
+        {
+            AllowDiskUse = true,
+            MaxTime = TimeSpan.FromMinutes(10),
+            Comment = "Brand statistics with string pipeline"
+        };
+
+        await _collection.AggregateToCollectionAsync<BsonDocument>(
+            pipeline,
+            options,
+            cancellationToken
+        );
+    }
+
+ public class BrandStatisticDto
+ {
+     public string Id { get; set; }
+     public string Brand { get; set; }
+     public int ProductCount { get; set; }
+     public double AveragePrice { get; set; }
+     public decimal MinPrice { get; set; }
+     public decimal MaxPrice { get; set; }
+     public decimal TotalValue { get; set; }
+     public DateTime LastUpdated { get; set; }
+ }
