@@ -1,0 +1,548 @@
+//using MongoDB.Bson;
+//using MongoDB.Bson.IO;
+//using MongoDB.Bson.Serialization;
+//using MongoDB.Bson.Serialization.Attributes;
+//using MongoDB.Bson.Serialization.Serializers;
+//using MongoDB.Driver;
+//using Microsoft.Extensions.Options;
+//using System;
+//using System.Collections.Generic;
+//using System.Threading.Tasks;
+//using System.Text.Json.Serialization;
+
+//// Your existing interfaces and models
+//public interface IMongoEntity
+//{
+//    string? Id { get; set; }
+//}
+
+//public class Product : IMongoEntity
+//{
+//    // The Id property is now part of the IMongoEntity interface
+//    [BsonId]
+//    [BsonRepresentation(BsonType.ObjectId)]
+//    public string? Id { get; set; }
+
+//    [BsonElement("name")]
+//    [JsonPropertyName("name")]
+//    public string Name { get; set; }
+
+//    [BsonElement("category")]
+//    [JsonPropertyName("category")]
+//    public string Category { get; set; }
+
+//    [BsonElement("price")]
+//    [JsonPropertyName("price")]
+//    public decimal Price { get; set; }
+
+//    [BsonElement("rating")]
+//    [JsonPropertyName("rating")]
+//    public double Rating { get; set; }
+
+//    [BsonElement("createddate")]
+//    [JsonPropertyName("createddate")]
+//    public DateTime CreatedDate { get; set; }
+
+//    [BsonElement("brand")]
+//    [JsonPropertyName("brand")]
+//    public string Brand { get; set; }
+
+//    [BsonElement("instock")]
+//    [JsonPropertyName("instock")]
+//    public bool InStock { get; set; }
+//}
+
+//public class DatabaseSettings
+//{
+//    public string ConnectionString { get; set; }
+//    public string DatabaseName { get; set; }
+//    public Dictionary<string, string> CollectionNames { get; set; }
+//}
+
+//// Your existing repository base class
+//public class MongoDbRepository<TEntity> where TEntity : IMongoEntity
+//{
+//    protected readonly IMongoCollection<TEntity> _collection;
+
+//    public MongoDbRepository(IOptions<DatabaseSettings> settings)
+//    {
+//        var mongoClient = new MongoClient(settings.Value.ConnectionString);
+//        var mongoDatabase = mongoClient.GetDatabase(settings.Value.DatabaseName);
+//        // Get the collection name dynamically from the dictionary.
+//        string collectionName = settings.Value.CollectionNames[typeof(TEntity).Name];
+//        _collection = mongoDatabase.GetCollection<TEntity>(collectionName);
+//    }
+
+//    public async Task<List<TEntity>> GetAsync() =>
+//        await _collection.Find(_ => true).ToListAsync();
+
+//    public async Task<TEntity?> GetAsync(string id) =>
+//        await _collection.Find(x => x.Id == id).FirstOrDefaultAsync();
+
+//    public async Task CreateAsync(TEntity newEntity) =>
+//        await _collection.InsertOneAsync(newEntity);
+
+//    public async Task UpdateAsync(string id, TEntity updatedEntity) =>
+//        await _collection.ReplaceOneAsync(x => x.Id == id, updatedEntity);
+
+//    public async Task RemoveAsync(string id) =>
+//        await _collection.DeleteOneAsync(x => x.Id == id);
+
+//    public async Task<List<TProjection>> FindAsync<TProjection>(FilterDefinition<TEntity> filter, ProjectionDefinition<TEntity, TProjection> projection)
+//    {
+//        return await _collection.Find(filter).Project(projection).ToListAsync();
+//    }
+//}
+
+//// Product Service extending your repository pattern
+//public class ProductService : MongoDbRepository<Product>
+//{
+//    public ProductService(IOptions<DatabaseSettings> databaseSettings) : base(databaseSettings)
+//    {
+//    }
+
+//    // Example 1: Accessing the DocumentSerializer property directly
+//    public void InspectDocumentSerializer()
+//    {
+//        // Get the document serializer for the collection
+//        var serializer = _collection.DocumentSerializer;
+
+//        Console.WriteLine($"Serializer Type: {serializer.GetType().Name}");
+//        Console.WriteLine($"Value Type: {serializer.ValueType.Name}");
+
+//        // Check if serializer is a BsonClassMapSerializer<Product>
+//        if (serializer is BsonClassMapSerializer<Product>)
+//        {
+//            Console.WriteLine("Using BsonClassMapSerializer");
+//            // Use LookupClassMap instead of .ClassMap
+//            var classMap = BsonClassMap.LookupClassMap(typeof(Product));
+//            Console.WriteLine($"Class: {classMap.ClassType.Name}");
+
+//            foreach (var memberMap in classMap.AllMemberMaps)
+//            {
+//                Console.WriteLine($"  Property: {memberMap.MemberName} -> Element: {memberMap.ElementName}");
+//            }
+//        }
+//    }
+
+//    // Example 2: Manual serialization using DocumentSerializer
+//    public BsonDocument SerializeProductToBson(Product product)
+//    {
+//        // Serialize to BsonDocument
+//        return product.ToBsonDocument();
+//    }
+
+//    // Example 3: Manual deserialization using DocumentSerializer
+//    public Product DeserializeProductFromBson(BsonDocument document)
+//    {
+//        var serializer = _collection.DocumentSerializer;
+
+//        // Deserialize from BsonDocument
+//        using (var reader = new BsonDocumentReader(document))
+//        {
+//            var context = BsonDeserializationContext.CreateRoot(reader);
+//            return serializer.Deserialize(context);
+//        }
+//    }
+
+//    // Example method to create a sample BsonDocument for testing
+//    public BsonDocument CreateSampleProductBsonDocument()
+//    {
+//        var document = new BsonDocument
+//        {
+//            ["_id"] = new BsonObjectId(ObjectId.GenerateNewId()),
+//            ["name"] = "Gaming Laptop",
+//            ["category"] = "Electronics",
+//            ["price"] = new BsonDecimal128(1299.99m),
+//            ["rating"] = 4.5,
+//            ["createddate"] = new BsonDateTime(DateTime.UtcNow),
+//            ["brand"] = "TechBrand",
+//            ["instock"] = true
+//        };
+
+//        return document;
+//    }
+
+//    // Test method demonstrating deserialization
+//    public void TestDeserialization()
+//    {
+//        // Create a sample BsonDocument
+//        var sampleDocument = CreateSampleProductBsonDocument();
+
+//        Console.WriteLine("Original BSON Document:");
+//        Console.WriteLine(sampleDocument.ToJson());
+
+//        // Deserialize it to Product
+//        var deserializedProduct = DeserializeProductFromBson(sampleDocument);
+
+//        Console.WriteLine("\nDeserialized Product:");
+//        Console.WriteLine($"ID: {deserializedProduct.Id}");
+//        Console.WriteLine($"Name: {deserializedProduct.Name}");
+//        Console.WriteLine($"Category: {deserializedProduct.Category}");
+//        Console.WriteLine($"Price: ${deserializedProduct.Price}");
+//        Console.WriteLine($"Rating: {deserializedProduct.Rating}");
+//        Console.WriteLine($"Brand: {deserializedProduct.Brand}");
+//        Console.WriteLine($"In Stock: {deserializedProduct.InStock}");
+//        Console.WriteLine($"Created Date: {deserializedProduct.CreatedDate}");
+//    }
+
+//    // Alternative: Create BsonDocument from existing database data
+//    public BsonDocument CreateBsonDocumentFromDatabaseFormat()
+//    {
+//        // This represents how data might look coming from your MongoDB collection
+//        var document = new BsonDocument
+//        {
+//            // MongoDB ObjectId as string (your model uses string Id)
+//            ["_id"] = "507f1f77bcf86cd799439011",
+//            ["name"] = "Wireless Headphones",
+//            ["category"] = "Audio",
+//            ["price"] = new BsonDecimal128(199.99m),
+//            ["rating"] = 4.2,
+//            ["createddate"] = new BsonDateTime(new DateTime(2024, 1, 15, 10, 30, 0, DateTimeKind.Utc)),
+//            ["brand"] = "AudioTech",
+//            ["instock"] = false
+//        };
+
+//        return document;
+//    }
+
+//    // Method to demonstrate round-trip serialization/deserialization
+//    public void DemonstrateRoundTripSerialization()
+//    {
+//        // Step 1: Create a Product object
+//        var originalProduct = new Product
+//        {
+//            Id = ObjectId.GenerateNewId().ToString(),
+//            Name = "Mechanical Keyboard",
+//            Category = "Accessories",
+//            Price = 149.99m,
+//            Rating = 4.8,
+//            CreatedDate = DateTime.UtcNow,
+//            Brand = "KeyTech",
+//            InStock = true
+//        };
+
+//        Console.WriteLine("=== Round-Trip Serialization Test ===");
+//        Console.WriteLine("Original Product:");
+//        Console.WriteLine($"  Name: {originalProduct.Name}");
+//        Console.WriteLine($"  Price: ${originalProduct.Price}");
+//        Console.WriteLine($"  In Stock: {originalProduct.InStock}");
+
+//        // Step 2: Serialize to BsonDocument
+//        var bsonDoc = SerializeProductToBson(originalProduct);
+//        Console.WriteLine("\nSerialized BSON:");
+//        Console.WriteLine(bsonDoc.ToJson());
+
+//        // Step 3: Deserialize back to Product
+//        var deserializedProduct = DeserializeProductFromBson(bsonDoc);
+//        Console.WriteLine("\nDeserialized Product:");
+//        Console.WriteLine($"  Name: {deserializedProduct.Name}");
+//        Console.WriteLine($"  Price: ${deserializedProduct.Price}");
+//        Console.WriteLine($"  In Stock: {deserializedProduct.InStock}");
+
+//        // Step 4: Validate round-trip
+//        var isValid = ValidateSerializationRoundTrip(originalProduct);
+//        Console.WriteLine($"\nRound-trip validation: {(isValid ? "✅ PASSED" : "❌ FAILED")}");
+//    }
+
+//    // Example 4: Working with raw BSON data
+//    public async Task<string> GetProductAsJsonAsync(string id)
+//    {
+//        var serializer = _collection.DocumentSerializer;
+
+//        // Find the document as BsonDocument first
+//        var filter = Builders<Product>.Filter.Eq(p => p.Id, id);
+//        var bsonDoc = await _collection
+//            .Find(filter)
+//            .Project(Builders<Product>.Projection.As<BsonDocument>())
+//            .FirstOrDefaultAsync();
+
+//        if (bsonDoc == null) return null;
+
+//        // Convert BsonDocument to Product using the collection's serializer
+//        var product = DeserializeProductFromBson(bsonDoc);
+
+//        // Convert back to JSON (just for demonstration)
+//        var serializedBson = SerializeProductToBson(product);
+//        return serializedBson.ToJson();
+//    }
+
+//    // Example 5: Comparing serializers
+//    public void CompareSerializers()
+//    {
+//        var collectionSerializer = _collection.DocumentSerializer;
+//        var registeredSerializer = BsonSerializer.LookupSerializer<Product>();
+
+//        Console.WriteLine($"Collection Serializer: {collectionSerializer.GetType().Name}");
+//        Console.WriteLine($"Registered Serializer: {registeredSerializer.GetType().Name}");
+//        Console.WriteLine($"Are Same Instance: {ReferenceEquals(collectionSerializer, registeredSerializer)}");
+//    }
+
+//    // Example 6: Using DocumentSerializer for custom operations
+//    public async Task<List<Product>> FindWithCustomDeserializationAsync()
+//    {
+//        var serializer = _collection.DocumentSerializer;
+//        var results = new List<Product>();
+
+//        // Get raw BSON documents
+//        var cursor = await _collection
+//            .Find(Builders<Product>.Filter.Empty)
+//            .Project(Builders<Product>.Projection.As<BsonDocument>())
+//            .ToCursorAsync();
+
+//        await cursor.ForEachAsync(doc =>
+//        {
+//            // Use the collection's DocumentSerializer to deserialize
+//            using (var reader = new BsonDocumentReader(doc))
+//            {
+//                var context = BsonDeserializationContext.CreateRoot(reader);
+//                var product = serializer.Deserialize(context);
+//                results.Add(product);
+//            }
+//        });
+
+//        return results;
+//    }
+
+//    // Example 7: Validating serialization round-trip
+//    public bool ValidateSerializationRoundTrip(Product originalProduct)
+//    {
+//        var serializer = _collection.DocumentSerializer;
+
+//        try
+//        {
+//            // Serialize to BSON
+//            var bsonDoc = serializer.ToBsonDocument(originalProduct);
+
+//            // Deserialize back to object
+//            var deserializedProduct = DeserializeProductFromBson(bsonDoc);
+
+//            // Compare key properties
+//            return originalProduct.Id == deserializedProduct.Id &&
+//                   originalProduct.Name == deserializedProduct.Name &&
+//                   originalProduct.Category == deserializedProduct.Category &&
+//                   originalProduct.Price == deserializedProduct.Price &&
+//                   originalProduct.Brand == deserializedProduct.Brand &&
+//                   originalProduct.InStock == deserializedProduct.InStock;
+//        }
+//        catch (Exception ex)
+//        {
+//            Console.WriteLine($"Serialization validation failed: {ex.Message}");
+//            return false;
+//        }
+//    }
+
+//    // Business logic specific to products
+//    public async Task<List<Product>> GetProductsByCategoryAsync(string category)
+//    {
+//        var filter = Builders<Product>.Filter.Eq(p => p.Category, category);
+//        return await _collection.Find(filter).ToListAsync();
+//    }
+
+//    public async Task<List<Product>> GetInStockProductsAsync()
+//    {
+//        var filter = Builders<Product>.Filter.Eq(p => p.InStock, true);
+//        return await _collection.Find(filter).ToListAsync();
+//    }
+
+//    public async Task<List<Product>> GetProductsByPriceRangeAsync(decimal minPrice, decimal maxPrice)
+//    {
+//        var filter = Builders<Product>.Filter.And(
+//            Builders<Product>.Filter.Gte(p => p.Price, minPrice),
+//            Builders<Product>.Filter.Lte(p => p.Price, maxPrice)
+//        );
+//        return await _collection.Find(filter).ToListAsync();
+//    }
+
+//    public async Task<List<Product>> GetTopRatedProductsAsync(double minRating = 4.0)
+//    {
+//        var filter = Builders<Product>.Filter.Gte(p => p.Rating, minRating);
+//        var sort = Builders<Product>.Sort.Descending(p => p.Rating);
+//        return await _collection.Find(filter).Sort(sort).ToListAsync();
+//    }
+
+//    // Custom projection example using DocumentSerializer knowledge
+//    public async Task<List<ProductSummary>> GetProductSummariesAsync()
+//    {
+//        return await _collection
+//            .Find(Builders<Product>.Filter.Empty)
+//            .Project(p => new ProductSummary
+//            {
+//                Id = p.Id,
+//                Name = p.Name,
+//                Price = p.Price,
+//                Rating = p.Rating,
+//                InStock = p.InStock
+//            })
+//            .ToListAsync();
+//    }
+
+//    // Alternative: Using BsonDocument projection then manual deserialization
+//    public async Task<List<ProductSummary>> GetProductSummariesWithDocumentSerializerAsync()
+//    {
+//        var projection = Builders<Product>.Projection
+//            .Include(p => p.Id)
+//            .Include(p => p.Name)
+//            .Include(p => p.Price)
+//            .Include(p => p.Rating)
+//            .Include(p => p.InStock)
+//            .Exclude("_id"); // Exclude other fields
+
+//        var bsonDocuments = await _collection
+//            .Find(Builders<Product>.Filter.Empty)
+//            .Project(projection)
+//            .As<BsonDocument>()
+//            .ToListAsync();
+
+//        var results = new List<ProductSummary>();
+//        foreach (var doc in bsonDocuments)
+//        {
+//            var summary = new ProductSummary
+//            {
+//                Id = doc.GetValue("_id", "").AsString,
+//                Name = doc.GetValue("name", "").AsString,
+//                Price = doc.GetValue("price", 0).ToDecimal(),
+//                Rating = doc.GetValue("rating", 0.0).AsDouble,
+//                InStock = doc.GetValue("instock", false).AsBoolean
+//            };
+//            results.Add(summary);
+//        }
+
+//        return results;
+//    }
+
+//    // Method that works with your existing FindAsync signature
+//    public async Task<List<BsonDocument>> GetProductSummariesAsBsonAsync()
+//    {
+//        var projection = Builders<Product>.Projection
+//            .Include(p => p.Id)
+//            .Include(p => p.Name)
+//            .Include(p => p.Price)
+//            .Include(p => p.Rating)
+//            .Include(p => p.InStock);
+
+//        // Use your existing FindAsync method with BsonDocument
+//        return await FindAsync(
+//            Builders<Product>.Filter.Empty,
+//            projection
+//        );
+//    }
+
+//    // Convert BsonDocuments to ProductSummary objects
+//    public async Task<List<ProductSummary>> GetProductSummariesFromBsonAsync()
+//    {
+//        var bsonDocuments = await GetProductSummariesAsBsonAsync();
+//        var results = new List<ProductSummary>();
+
+//        foreach (var doc in bsonDocuments)
+//        {
+//            var summary = new ProductSummary
+//            {
+//                Id = doc.GetValue("_id", "").ToString(),
+//                Name = doc.GetValue("name", "").AsString,
+//                Price = doc.GetValue("price", 0).ToDecimal(),
+//                Rating = doc.GetValue("rating", 0.0).AsDouble,
+//                InStock = doc.GetValue("instock", false).AsBoolean
+//            };
+//            results.Add(summary);
+//        }
+
+//        return results;
+//    }
+//}
+
+//// DTO for projection example
+//public class ProductSummary
+//{
+//    public string Id { get; set; }
+//    public string Name { get; set; }
+//    public decimal Price { get; set; }
+//    public double Rating { get; set; }
+//    public bool InStock { get; set; }
+//}
+
+//// Usage example program
+//public class Program
+//{
+//    public static async Task Main(string[] args)
+//    {
+//        try
+//        {
+//            // Setup configuration (normally done through DI)
+//            var databaseSettings = new DatabaseSettings
+//            {
+//                ConnectionString = "mongodb://localhost:27017",
+//                DatabaseName = "productdb",
+//                CollectionNames = new Dictionary<string, string>
+//                {
+//                    { "Product", "products" }
+//                }
+//            };
+
+//            var options = Options.Create(databaseSettings);
+//            var productService = new ProductService(options);
+
+//            // Create a test product
+//            var product = new Product
+//            {
+//                Id = ObjectId.GenerateNewId().ToString(),
+//                Name = "Gaming Laptop",
+//                Category = "Electronics",
+//                Price = 1299.99m,
+//                Rating = 4.5,
+//                CreatedDate = DateTime.UtcNow,
+//                Brand = "TechBrand",
+//                InStock = true
+//            };
+
+//            Console.WriteLine("=== Inspecting DocumentSerializer ===");
+//            productService.InspectDocumentSerializer();
+
+//            Console.WriteLine("\n=== Comparing Serializers ===");
+//            productService.CompareSerializers();
+
+//            Console.WriteLine("\n=== Manual Serialization ===");
+//            var bsonDoc = productService.SerializeProductToBson(product);
+//            Console.WriteLine($"BSON Document: {bsonDoc.ToJson()}");
+
+//            Console.WriteLine("\n=== Manual Deserialization ===");
+//            var deserializedProduct = productService.DeserializeProductFromBson(bsonDoc);
+//            Console.WriteLine($"Deserialized: {deserializedProduct.Name} - ${deserializedProduct.Price}");
+
+//            Console.WriteLine("\n=== Validation Round-trip ===");
+//            var isValid = productService.ValidateSerializationRoundTrip(product);
+//            Console.WriteLine($"Round-trip validation: {(isValid ? "PASSED" : "FAILED")}");
+
+//            // Insert the product and test repository operations
+//            await productService.CreateAsync(product);
+//            Console.WriteLine($"Created product with ID: {product.Id}");
+
+//            // Test business logic methods
+//            Console.WriteLine("\n=== Business Logic Operations ===");
+//            var inStockProducts = await productService.GetInStockProductsAsync();
+//            Console.WriteLine($"Products in stock: {inStockProducts.Count}");
+
+//            var expensiveProducts = await productService.GetProductsByPriceRangeAsync(1000, 2000);
+//            Console.WriteLine($"Products in $1000-$2000 range: {expensiveProducts.Count}");
+
+//            Console.WriteLine("\n=== Custom Deserialization Operation ===");
+//            var products = await productService.FindWithCustomDeserializationAsync();
+//            Console.WriteLine($"Found {products.Count} products using custom deserialization");
+
+//            Console.WriteLine("\n=== Get as JSON ===");
+//            var json = await productService.GetProductAsJsonAsync(product.Id);
+//            Console.WriteLine($"Product as JSON: {json}");
+
+//            // Test projection
+//            Console.WriteLine("\n=== Product Summaries ===");
+//            var summaries = await productService.GetProductSummariesAsync();
+//            Console.WriteLine($"Retrieved {summaries.Count} product summaries");
+
+//        }
+//        catch (Exception ex)
+//        {
+//            Console.WriteLine($"Error: {ex.Message}");
+//            Console.WriteLine($"Stack trace: {ex.StackTrace}");
+//        }
+//    }
+//}
