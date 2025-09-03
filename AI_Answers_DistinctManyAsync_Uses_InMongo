@@ -1,0 +1,778 @@
+using MongoDB.Bson;
+using MongoDB.Driver;
+using System;
+using System.Collections.Generic;
+using System.Linq.Expressions;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc;
+
+// Your existing Product model with additional array fields for DistinctMany
+public class Product
+{
+    public ObjectId Id { get; set; }
+    public string Brand { get; set; }
+    public string Category { get; set; }
+    public decimal Price { get; set; }
+    public string Name { get; set; }
+    public DateTime CreatedDate { get; set; }
+    
+    // Array fields for DistinctMany operations
+    public List<string> Tags { get; set; } = new List<string>();
+    public List<string> Colors { get; set; } = new List<string>();
+    public List<string> Sizes { get; set; } = new List<string>();
+    public List<ProductFeature> Features { get; set; } = new List<ProductFeature>();
+}
+
+public class ProductFeature
+{
+    public string Name { get; set; }
+    public string Value { get; set; }
+    public string Type { get; set; }
+}
+
+// Controller methods for DistinctMany operations
+[HttpGet("GetDistinctTags")]
+public async Task<IActionResult> GetDistinctTags(
+    string brand = null, 
+    string category = null, 
+    CancellationToken cancellationToken = default)
+{
+    try
+    {
+        var distinctTags = await _aggregationService.GetDistinctTagsAsync(brand, category, cancellationToken);
+        return Ok(new { tags = distinctTags });
+    }
+    catch (OperationCanceledException)
+    {
+        return StatusCode(499, "Operation was cancelled");
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = ex.Message });
+    }
+}
+
+[HttpGet("GetDistinctColors")]
+public async Task<IActionResult> GetDistinctColors(
+    decimal? minPrice = null, 
+    string category = null, 
+    CancellationToken cancellationToken = default)
+{
+    try
+    {
+        var distinctColors = await _aggregationService.GetDistinctColorsAsync(minPrice, category, cancellationToken);
+        return Ok(new { colors = distinctColors });
+    }
+    catch (OperationCanceledException)
+    {
+        return StatusCode(499, "Operation was cancelled");
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = ex.Message });
+    }
+}
+
+[HttpGet("GetDistinctFeatureNames")]
+public async Task<IActionResult> GetDistinctFeatureNames(
+    string brand = null, 
+    string featureType = null, 
+    CancellationToken cancellationToken = default)
+{
+    try
+    {
+        var distinctFeatures = await _aggregationService.GetDistinctFeatureNamesAsync(brand, featureType, cancellationToken);
+        return Ok(new { featureNames = distinctFeatures });
+    }
+    catch (OperationCanceledException)
+    {
+        return StatusCode(499, "Operation was cancelled");
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = ex.Message });
+    }
+}
+
+[HttpPost("GetProductFilters")]
+public async Task<IActionResult> GetProductFilters(CancellationToken cancellationToken = default)
+{
+    try
+    {
+        var filters = await _aggregationService.GetAllProductFiltersAsync(cancellationToken);
+        return Ok(filters);
+    }
+    catch (OperationCanceledException)
+    {
+        return StatusCode(499, "Operation was cancelled");
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = ex.Message });
+    }
+}
+
+// Service methods using DistinctManyAsync with fluent API
+public async Task<List<string>> GetDistinctTagsAsync(
+    string brand = null, 
+    string category = null, 
+    CancellationToken cancellationToken = default)
+{
+    var filterBuilder = Builders<Product>.Filter;
+    var filters = new List<FilterDefinition<Product>>();
+    
+    // Add brand filter if specified
+    if (!string.IsNullOrEmpty(brand))
+    {
+        filters.Add(filterBuilder.Eq(x => x.Brand, brand));
+    }
+    
+    // Add category filter if specified
+    if (!string.IsNullOrEmpty(category))
+    {
+        filters.Add(filterBuilder.Eq(x => x.Category, category));
+    }
+    
+    // Add base filter to exclude empty tags
+    filters.Add(filterBuilder.Ne(x => x.Tags, null));
+    filters.Add(filterBuilder.Not(filterBuilder.Size(x => x.Tags, 0)));
+    
+    var finalFilter = filters.Count > 0 
+        ? filterBuilder.And(filters) 
+        : FilterDefinition<Product>.Empty;
+
+    // Use DistinctManyAsync with field definition
+    var fieldDefinition = new StringFieldDefinition<Product, IEnumerable<string>>("Tags");
+    
+    var options = new DistinctOptions
+    {
+        MaxTime = TimeSpan.FromSeconds(30),
+        Collation = new Collation("en", strength: CollationStrength.Primary)
+    };
+
+    var cursor = await _collection.DistinctManyAsync(
+        fieldDefinition, 
+        finalFilter, 
+        options, 
+        cancellationToken
+    );
+    
+    return await cursor.ToListAsync(cancellationToken);
+}
+
+public async Task<List<string>> GetDistinctColorsAsync(
+    decimal? minPrice = null, 
+    string category = null, 
+    CancellationToken cancellationToken = default)
+{
+    var filterBuilder = Builders<Product>.Filter;
+    var filters = new List<FilterDefinition<Product>>();
+    
+    // Add price filter if specified
+    if (minPrice.HasValue)
+    {
+        filters.Add(filterBuilder.Gte(x => x.Price, minPrice.Value));
+    }
+    
+    // Add category filter if specified
+    if (!string.IsNullOrEmpty(category))
+    {
+        filters.Add(filterBuilder.Eq(x => x.Category, category));
+    }
+    
+    // Add base filter to exclude empty colors
+    filters.Add(filterBuilder.Ne(x => x.Colors, null));
+    filters.Add(filterBuilder.Not(filterBuilder.Size(x => x.Colors, 0)));
+    
+    var finalFilter = filters.Count > 0 
+        ? filterBuilder.And(filters) 
+        : FilterDefinition<Product>.Empty;
+
+    // Use DistinctManyAsync with expression (fluent API)
+    var fieldDefinition = new ExpressionFieldDefinition<Product, IEnumerable<string>>(x => x.Colors);
+    
+    var options = new DistinctOptions
+    {
+        MaxTime = TimeSpan.FromSeconds(30),
+        BatchSize = 500
+    };
+
+    var cursor = await _collection.DistinctManyAsync(
+        fieldDefinition, 
+        finalFilter, 
+        options, 
+        cancellationToken
+    );
+    
+    return await cursor.ToListAsync(cancellationToken);
+}
+
+public async Task<List<string>> GetDistinctSizesAsync(
+    string brand = null, 
+    decimal? maxPrice = null, 
+    CancellationToken cancellationToken = default)
+{
+    var filterBuilder = Builders<Product>.Filter;
+    var filters = new List<FilterDefinition<Product>>();
+    
+    // Add brand filter if specified
+    if (!string.IsNullOrEmpty(brand))
+    {
+        filters.Add(filterBuilder.Eq(x => x.Brand, brand));
+    }
+    
+    // Add max price filter if specified
+    if (maxPrice.HasValue)
+    {
+        filters.Add(filterBuilder.Lte(x => x.Price, maxPrice.Value));
+    }
+    
+    // Add base filter to exclude empty sizes
+    filters.Add(filterBuilder.Ne(x => x.Sizes, null));
+    filters.Add(filterBuilder.Not(filterBuilder.Size(x => x.Sizes, 0)));
+    
+    var finalFilter = filters.Count > 0 
+        ? filterBuilder.And(filters) 
+        : FilterDefinition<Product>.Empty;
+
+    // Direct field name approach
+    var fieldDefinition = new StringFieldDefinition<Product, IEnumerable<string>>("Sizes");
+    
+    var cursor = await _collection.DistinctManyAsync(
+        fieldDefinition, 
+        finalFilter, 
+        cancellationToken: cancellationToken
+    );
+    
+    var distinctSizes = await cursor.ToListAsync(cancellationToken);
+    
+    // Sort sizes in logical order (S, M, L, XL, etc.)
+    var sizeOrder = new Dictionary<string, int>
+    {
+        { "XS", 1 }, { "S", 2 }, { "M", 3 }, { "L", 4 }, 
+        { "XL", 5 }, { "XXL", 6 }, { "XXXL", 7 }
+    };
+    
+    return distinctSizes
+        .OrderBy(size => sizeOrder.ContainsKey(size.ToUpper()) ? sizeOrder[size.ToUpper()] : 999)
+        .ThenBy(size => size)
+        .ToList();
+}
+
+public async Task<List<string>> GetDistinctFeatureNamesAsync(
+    string brand = null, 
+    string featureType = null, 
+    CancellationToken cancellationToken = default)
+{
+    var filterBuilder = Builders<Product>.Filter;
+    var filters = new List<FilterDefinition<Product>>();
+    
+    // Add brand filter if specified
+    if (!string.IsNullOrEmpty(brand))
+    {
+        filters.Add(filterBuilder.Eq(x => x.Brand, brand));
+    }
+    
+    // Add feature type filter if specified (nested array filtering)
+    if (!string.IsNullOrEmpty(featureType))
+    {
+        filters.Add(filterBuilder.ElemMatch(x => x.Features, 
+            Builders<ProductFeature>.Filter.Eq(f => f.Type, featureType)));
+    }
+    
+    // Add base filter to exclude empty features
+    filters.Add(filterBuilder.Ne(x => x.Features, null));
+    filters.Add(filterBuilder.Not(filterBuilder.Size(x => x.Features, 0)));
+    
+    var finalFilter = filters.Count > 0 
+        ? filterBuilder.And(filters) 
+        : FilterDefinition<Product>.Empty;
+
+    // Use nested field path for feature names
+    var fieldDefinition = new StringFieldDefinition<Product, IEnumerable<string>>("Features.Name");
+    
+    var options = new DistinctOptions
+    {
+        MaxTime = TimeSpan.FromSeconds(45),
+        Comment = "Getting distinct feature names from nested array"
+    };
+
+    var cursor = await _collection.DistinctManyAsync(
+        fieldDefinition, 
+        finalFilter, 
+        options, 
+        cancellationToken
+    );
+    
+    return await cursor.ToListAsync(cancellationToken);
+}
+
+// Comprehensive method to get all available filters
+public async Task<ProductFiltersResponse> GetAllProductFiltersAsync(CancellationToken cancellationToken = default)
+{
+    // Execute all DistinctMany operations concurrently
+    var tasks = new[]
+    {
+        GetDistinctTagsAsync(cancellationToken: cancellationToken),
+        GetDistinctColorsAsync(cancellationToken: cancellationToken),
+        GetDistinctSizesAsync(cancellationToken: cancellationToken),
+        GetDistinctFeatureNamesAsync(cancellationToken: cancellationToken),
+        GetDistinctBrandsAsync(cancellationToken), // Using regular Distinct for comparison
+        GetDistinctCategoriesAsync(cancellationToken) // Using regular Distinct for comparison
+    };
+
+    var results = await Task.WhenAll(tasks);
+
+    return new ProductFiltersResponse
+    {
+        AvailableTags = results[0],
+        AvailableColors = results[1],
+        AvailableSizes = results[2],
+        AvailableFeatures = results[3],
+        AvailableBrands = results[4],
+        AvailableCategories = results[5],
+        LastUpdated = DateTime.UtcNow
+    };
+}
+
+// Regular Distinct methods for comparison (non-array fields)
+public async Task<List<string>> GetDistinctBrandsAsync(CancellationToken cancellationToken = default)
+{
+    var filter = Builders<Product>.Filter.Ne(x => x.Brand, null);
+    
+    var cursor = await _collection.DistinctAsync(
+        x => x.Brand, 
+        filter, 
+        cancellationToken: cancellationToken
+    );
+    
+    return await cursor.ToListAsync(cancellationToken);
+}
+
+public async Task<List<string>> GetDistinctCategoriesAsync(CancellationToken cancellationToken = default)
+{
+    var filter = Builders<Product>.Filter.Ne(x => x.Category, null);
+    
+    var cursor = await _collection.DistinctAsync(
+        x => x.Category, 
+        filter, 
+        cancellationToken: cancellationToken
+    );
+    
+    return await cursor.ToListAsync(cancellationToken);
+}
+
+// Advanced DistinctMany with complex filtering
+public async Task<List<string>> GetDistinctTagsByPriceRangeAsync(
+    decimal minPrice, 
+    decimal maxPrice, 
+    DateTime? createdAfter = null,
+    CancellationToken cancellationToken = default)
+{
+    var filterBuilder = Builders<Product>.Filter;
+    var filters = new List<FilterDefinition<Product>>
+    {
+        filterBuilder.Gte(x => x.Price, minPrice),
+        filterBuilder.Lte(x => x.Price, maxPrice),
+        filterBuilder.Ne(x => x.Tags, null),
+        filterBuilder.Not(filterBuilder.Size(x => x.Tags, 0))
+    };
+    
+    // Add created date filter if specified
+    if (createdAfter.HasValue)
+    {
+        filters.Add(filterBuilder.Gte(x => x.CreatedDate, createdAfter.Value));
+    }
+    
+    var finalFilter = filterBuilder.And(filters);
+
+    var options = new DistinctOptions
+    {
+        MaxTime = TimeSpan.FromMinutes(2),
+        Comment = $"Distinct tags for price range ${minPrice}-${maxPrice}",
+        Collation = new Collation("en", strength: CollationStrength.Primary)
+    };
+
+    var fieldDefinition = new StringFieldDefinition<Product, IEnumerable<string>>("Tags");
+    
+    var cursor = await _collection.DistinctManyAsync(
+        fieldDefinition, 
+        finalFilter, 
+        options, 
+        cancellationToken
+    );
+    
+    return await cursor.ToListAsync(cancellationToken);
+}
+
+// This method APPLIES the user-selected filters to find matching products
+public async Task<List<Product>> SearchProductsWithFiltersAsync(
+    string[] selectedTags = null,
+    string[] selectedColors = null, 
+    string[] selectedBrands = null,
+    CancellationToken cancellationToken = default)
+{
+    var filterBuilder = Builders<Product>.Filter;
+    var filters = new List<FilterDefinition<Product>>();
+    
+    // If user selected specific tags, find products that have ANY of those tags
+    if (selectedTags?.Length > 0)
+    {
+        filters.Add(filterBuilder.AnyIn(x => x.Tags, selectedTags));
+    }
+    
+    // If user selected specific colors, find products that have ANY of those colors  
+    if (selectedColors?.Length > 0)
+    {
+        filters.Add(filterBuilder.AnyIn(x => x.Colors, selectedColors));
+    }
+    
+    // If user selected specific brands, find products with those brands
+    if (selectedBrands?.Length > 0)
+    {
+        filters.Add(filterBuilder.In(x => x.Brand, selectedBrands));
+    }
+    
+    var finalFilter = filters.Count > 0 
+        ? filterBuilder.And(filters) 
+        : FilterDefinition<Product>.Empty;
+    
+    // Apply the user's filter selections to find matching products
+    var cursor = await _collection.FindAsync(finalFilter, cancellationToken: cancellationToken);
+    return await cursor.ToListAsync(cancellationToken);
+}
+public async Task<List<string>> GetDistinctColorsWithProgressAsync(
+    IProgress<string> progress = null,
+    CancellationToken cancellationToken = default)
+{
+    try
+    {
+        progress?.Report("Starting distinct colors extraction...");
+        
+        var filter = Builders<Product>.Filter.And(
+            Builders<Product>.Filter.Ne(x => x.Colors, null),
+            Builders<Product>.Filter.Not(Builders<Product>.Filter.Size(x => x.Colors, 0))
+        );
+
+        var options = new DistinctOptions
+        {
+            MaxTime = TimeSpan.FromMinutes(5),
+            BatchSize = 1000,
+            Comment = "Distinct colors with progress tracking"
+        };
+
+        progress?.Report("Executing DistinctManyAsync operation...");
+        
+        var fieldDefinition = new ExpressionFieldDefinition<Product, IEnumerable<string>>(x => x.Colors);
+        
+        var cursor = await _collection.DistinctManyAsync(
+            fieldDefinition, 
+            filter, 
+            options, 
+            cancellationToken
+        );
+        
+        progress?.Report("Processing results...");
+        
+        var results = await cursor.ToListAsync(cancellationToken);
+        
+        progress?.Report($"Found {results.Count} distinct colors");
+        
+        return results;
+    }
+    catch (OperationCanceledException)
+    {
+        progress?.Report("Operation was cancelled by user");
+        throw;
+    }
+    catch (MongoExecutionTimeoutException)
+    {
+        progress?.Report("Operation timed out");
+        throw;
+    }
+}
+
+// Complex DistinctMany with nested array filtering
+public async Task<List<string>> GetDistinctFeatureValuesByNameAsync(
+    string featureName, 
+    string brand = null, 
+    CancellationToken cancellationToken = default)
+{
+    var filterBuilder = Builders<Product>.Filter;
+    var filters = new List<FilterDefinition<Product>>();
+    
+    // Filter for products that have the specified feature name
+    filters.Add(filterBuilder.ElemMatch(x => x.Features, 
+        Builders<ProductFeature>.Filter.Eq(f => f.Name, featureName)));
+    
+    // Add brand filter if specified
+    if (!string.IsNullOrEmpty(brand))
+    {
+        filters.Add(filterBuilder.Eq(x => x.Brand, brand));
+    }
+    
+    var finalFilter = filterBuilder.And(filters);
+
+    // Use aggregation pipeline for complex nested array extraction
+    var pipeline = new[]
+    {
+        PipelineStageDefinitionBuilder.Match<Product>(finalFilter),
+        PipelineStageDefinitionBuilder.Unwind<Product, Product>(x => x.Features),
+        PipelineStageDefinitionBuilder.Match<Product>(
+            Builders<Product>.Filter.Eq("Features.Name", featureName)
+        ),
+        PipelineStageDefinitionBuilder.Group<Product, BsonDocument>(
+            "Features.Value",
+            g => new BsonDocument { { "_id", "$Features.Value" } }
+        ),
+        PipelineStageDefinitionBuilder.Project<BsonDocument, BsonDocument>(
+            new BsonDocument { { "_id", 1 } }
+        )
+    };
+
+    var aggregateOptions = new AggregateOptions
+    {
+        AllowDiskUse = true,
+        MaxTime = TimeSpan.FromMinutes(2),
+        Comment = $"Distinct feature values for {featureName}"
+    };
+
+    var results = new List<string>();
+    using var cursor = await _collection.AggregateAsync(pipeline, aggregateOptions, cancellationToken);
+    
+    while (await cursor.MoveNextAsync(cancellationToken))
+    {
+        foreach (var doc in cursor.Current)
+        {
+            if (doc.TryGetValue("_id", out var value) && !value.IsBsonNull)
+            {
+                results.Add(value.AsString);
+            }
+        }
+    }
+    
+    return results;
+}
+
+// Batch DistinctMany operations for multiple array fields
+public async Task<Dictionary<string, List<string>>> GetDistinctArrayFieldsAsync(
+    List<string> fieldNames, 
+    FilterDefinition<Product> baseFilter = null,
+    CancellationToken cancellationToken = default)
+{
+    baseFilter ??= FilterDefinition<Product>.Empty;
+    var results = new Dictionary<string, List<string>>();
+
+    var options = new DistinctOptions
+    {
+        MaxTime = TimeSpan.FromMinutes(3),
+        BatchSize = 500,
+        Comment = "Batch distinct many operations"
+    };
+
+    // Execute distinct operations for each field
+    foreach (var fieldName in fieldNames)
+    {
+        try
+        {
+            var fieldDefinition = new StringFieldDefinition<Product, IEnumerable<string>>(fieldName);
+            
+            // Add field-specific filter to exclude null/empty arrays
+            var fieldFilter = Builders<Product>.Filter.And(
+                baseFilter,
+                Builders<Product>.Filter.Ne(fieldName, null),
+                Builders<Product>.Filter.Not(Builders<Product>.Filter.Size(fieldName, 0))
+            );
+
+            var cursor = await _collection.DistinctManyAsync(
+                fieldDefinition, 
+                fieldFilter, 
+                options, 
+                cancellationToken
+            );
+            
+            results[fieldName] = await cursor.ToListAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Log error but continue with other fields
+            Console.WriteLine($"Error getting distinct values for field {fieldName}: {ex.Message}");
+            results[fieldName] = new List<string>();
+        }
+    }
+
+    return results;
+}
+
+// Method using DistinctMany for analytics
+public async Task<ProductAnalytics> GetProductAnalyticsAsync(CancellationToken cancellationToken = default)
+{
+    var tasks = new[]
+    {
+        GetDistinctTagsAsync(cancellationToken: cancellationToken),
+        GetDistinctColorsAsync(cancellationToken: cancellationToken),
+        GetDistinctSizesAsync(cancellationToken: cancellationToken),
+        GetDistinctFeatureNamesAsync(cancellationToken: cancellationToken)
+    };
+
+    var results = await Task.WhenAll(tasks);
+
+    return new ProductAnalytics
+    {
+        TotalUniqueTags = results[0].Count,
+        TotalUniqueColors = results[1].Count,
+        TotalUniqueSizes = results[2].Count,
+        TotalUniqueFeatures = results[3].Count,
+        MostCommonTags = results[0].Take(10).ToList(),
+        MostCommonColors = results[1].Take(10).ToList(),
+        GeneratedAt = DateTime.UtcNow
+    };
+}
+
+// Response models
+public class ProductFiltersResponse
+{
+    public List<string> AvailableTags { get; set; }
+    public List<string> AvailableColors { get; set; }
+    public List<string> AvailableSizes { get; set; }
+    public List<string> AvailableFeatures { get; set; }
+    public List<string> AvailableBrands { get; set; }
+    public List<string> AvailableCategories { get; set; }
+    public DateTime LastUpdated { get; set; }
+}
+
+public class ProductAnalytics
+{
+    public int TotalUniqueTags { get; set; }
+    public int TotalUniqueColors { get; set; }
+    public int TotalUniqueSizes { get; set; }
+    public int TotalUniqueFeatures { get; set; }
+    public List<string> MostCommonTags { get; set; }
+    public List<string> MostCommonColors { get; set; }
+    public DateTime GeneratedAt { get; set; }
+}
+
+// Example usage in your service class
+public class AggregationService
+{
+    private readonly IMongoCollection<Product> _collection;
+
+    public AggregationService(IMongoDatabase database)
+    {
+        _collection = database.GetCollection<Product>("products");
+    }
+
+    // All the above methods would be part of this service class
+    
+    // Example method showing different DistinctMany approaches
+    public async Task<List<string>> CompareDistinctApproachesAsync(CancellationToken cancellationToken = default)
+    {
+        // Approach 1: Using Expression (Type-safe, fluent)
+        var cursor1 = await _collection.DistinctManyAsync(
+            x => x.Tags,
+            x => x.Brand == "Nike",
+            cancellationToken: cancellationToken
+        );
+
+        // Approach 2: Using FieldDefinition (Direct field access)
+        var fieldDef = new StringFieldDefinition<Product, IEnumerable<string>>("Tags");
+        var filterDef = Builders<Product>.Filter.Eq(x => x.Brand, "Nike");
+        
+        var cursor2 = await _collection.DistinctManyAsync(
+            fieldDef,
+            filterDef,
+            cancellationToken: cancellationToken
+        );
+
+        // Approach 3: Using string field name (Most flexible)
+        var cursor3 = await _collection.DistinctManyAsync<string>(
+            "Tags",
+            Builders<Product>.Filter.Eq("Brand", "Nike"),
+            cancellationToken: cancellationToken
+        );
+
+        // All approaches return the same results
+        return await cursor1.ToListAsync(cancellationToken);
+    }
+}
+
+
+
+These are the available values users can filter by in your application:
+csharp// This returns filter OPTIONS for the UI
+public async Task<ProductFiltersResponse> GetAllProductFiltersAsync(...)
+{
+    return new ProductFiltersResponse
+    {
+        AvailableTags = ["Electronics", "Gaming", "Wireless"],     // User can filter BY these
+        AvailableColors = ["Red", "Blue", "Black"],                // User can filter BY these
+        AvailableBrands = ["Nike", "Adidas", "Puma"]              // User can filter BY these
+    };
+}
+Here's a clearer example:DistinctManyAsync with Generic Repository PatternCode // This endpoint returns AVAILABLE FILTER OPTIONS for the UI
+// Users can then use these values to filter products
+[HttpPost("GetAvailableFilterOptions")]
+public async Task<IActionResult> GetAvailableFilterOptions(CancellationToken cancellationToken DistinctManyAsync with Generic Repository PatternCode // This method gets all AVAILABLE OPTIONS that users can filter by
+// DistinctManyAsync extracts unique values from array fields to populate filter dropdowns
+public async Task<ProductFiltersResponse> GetAllAvailableFilterOptionsAsync(CancellationTokeDistinctManyAsync with Generic Repository PatternCode     return new ProductFiltersResponse
+    {
+        AvailableTags = results[0],        // Users can SELECT these to filter products
+        AvailableColors = results[1],      // Users can SELECT these to filter products
+        AvailableSizes = resulDistinctManyAsync with Generic Repository PatternCode ∙ Version 3 // This method APPLIES the user-selected filters to find matching products
+public async Task<List<Product>> SearchProductsWithFiltersAsync(
+    string[] selectedTags = null,
+    string[] selectedColors = null, 
+    string[] selectedBrands = null,
+   The Flow:
+Step 1: Get Available Options (using DistinctManyAsync)
+GET /GetAvailableFilterOptions
+Response: {
+  "availableTags": ["Electronics", "Gaming", "Wireless"],
+  "availableColors": ["Red", "Blue", "Black"], 
+  "availableBrands": ["Nike", "Adidas", "Puma"]
+}
+Step 2: User Selects Filters
+User clicks: Tags=["Gaming"], Colors=["Red", "Blue"], Brands=["Nike"]
+Step 3: Search with Selected Filters
+GET /SearchProducts?tags=Gaming&colors=Red&colors=Blue&brands=Nike
+Returns: Products that match user's selection
+The Connection:
+
+DistinctManyAsync extracts all unique values from array fields
+These values become filter options in your UI (dropdowns, checkboxes, etc.)
+Users select from these options to filter products
+You use those selections to query for matching products
+
+So "ProductFilters" really means "Available Filter Options" - the choices users can pick from!
+
+Explanation:
+-----------
+This example demonstrates several key aspects of using DistinctManyAsync with MongoDB C# driver:
+Key Features:
+
+Generic Repository Pattern: The GenericRepository<T> provides a reusable base for any document type, while ProductRepository adds specific business logic.
+Fluent API Integration: Uses Expression<Func<T, IEnumerable<TItem>>> for type-safe field selection and filtering.
+Multiple Approaches:
+
+Expression-based (fluent): p => p.Tags
+Field definition-based: new StringFieldDefinition<Product, IEnumerable<string>>("Colors")
+
+
+Array Field Support: Works with various array types:
+
+Simple string arrays (Tags, Colors, Sizes)
+Nested object arrays (Features.Name)
+
+
+Flexible Filtering: Supports both expression-based and filter definition-based filtering.
+Options Support: Includes timeout, collation, and other MongoDB options.
+
+Common Use Cases:
+
+Getting filter options for UI dropdowns
+Analytics on array field distributions
+Data validation and cleanup
+Building search facets
+
+The DistinctManyAsync method is particularly useful when you have array fields in your documents and need to get all unique values across those arrays,  which is common in product catalogs, tagging systems, and faceted search implementations.
