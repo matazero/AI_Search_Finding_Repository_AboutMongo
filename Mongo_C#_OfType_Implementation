@@ -1,0 +1,672 @@
+MongoDB OfType Implementation and Related Questions
+---------------------------------------------------
+Question : My Repository: 
+
+using Microsoft.Extensions.Options;
+using MongoDB.Bson;
+using MongoDB.Driver;
+using WebApplication1.Dto;
+using WebApplication1.Models;
+
+namespace WebApplication1.Repository
+{
+    public class MongoDbRepository<TEntity> where TEntity : IMongoEntity
+    {
+        protected readonly IMongoCollection<TEntity> _collection;
+
+        public MongoDbRepository(IOptions<DatabaseSettings> settings)
+        {
+            var mongoClient = new MongoClient(settings.Value.ConnectionString);
+            var mongoDatabase = mongoClient.GetDatabase(settings.Value.DatabaseName);
+
+            // Get the collection name dynamically from the dictionary.
+            string collectionName = settings.Value.CollectionNames[typeof(TEntity).Name];
+
+            _collection = mongoDatabase.GetCollection<TEntity>(collectionName);
+        }
+
+        // Eski generic olamayan repository tanimi
+
+        //public MongoDbRepository(IOptions<DatabaseSettings> settings, string collectionName)
+        //{
+        //    var mongoClient = new MongoClient(settings.Value.ConnectionString);
+        //    var mongoDatabase = mongoClient.GetDatabase(settings.Value.DatabaseName);
+        //    _collection = mongoDatabase.GetCollection<TEntity>(collectionName);
+        //}
+        public async Task<List<TEntity>> GetAsync() =>
+            await collection.Find( => true).ToListAsync();
+
+        public async Task<TEntity?> GetAsync(string id) =>
+            await _collection.Find(x => x.Id == id).FirstOrDefaultAsync();
+
+        public async Task CreateAsync(TEntity newEntity) =>
+            await _collection.InsertOneAsync(newEntity);
+
+        public async Task UpdateAsync(string id, TEntity updatedEntity) =>
+            await _collection.ReplaceOneAsync(x => x.Id == id, updatedEntity);
+
+        public async Task RemoveAsync(string id) =>
+            await _collection.DeleteOneAsync(x => x.Id == id);
+
+        public async Task<List<TProjection>> FindAsync<TProjection>(FilterDefinition<TEntity> filter,ProjectionDefinition<TEntity, TProjection> projection)
+        {
+            return await _collection.Find(filter).Project(projection).ToListAsync();
+        }
+    }
+}
+
+My Service:
+
+  public class ProductService : MongoDbRepository<Product>
+  {
+  ....
+  }
+  
+  My Controller: 
+  
+   [ApiController]
+ [Route("api/[controller]")]
+ public class ProductDataController : Controller
+ {
+
+     private readonly ProductService _productService;
+
+     public ProductDataController(ProductService productService)
+     {
+         _productService = productService;
+     }
+...
+}
+
+In the mongo-csharp-driver documentation 
+OfType<TDerivedDocument>() 
+Returns a filtered collection that appears to contain only documents of the derived type. All operations using this filtered collection will automatically use discriminators as necessary.
+property is given 
+OfType Can u give a concrete example of its api method implementation according to above project structure  ????
+
+Answer:
+------
+The OfType<TDerivedDocument>() method is used for polymorphism in MongoDB when you have inheritance hierarchies and store different derived types in the same collection using discriminators. Let me show you a concrete example:
+
+// =================================
+// 1. First, create inheritance hierarchy for Product
+// =================================
+
+// Base Product class
+[BsonDiscriminator(RootClass = true)]
+[BsonKnownTypes(typeof(ElectronicProduct), typeof(ClothingProduct), typeof(BookProduct))]
+public class Product : IMongoEntity
+{
+    [BsonId]
+    [BsonRepresentation(BsonType.ObjectId)]
+    public string Id { get; set; } = string.Empty;
+    
+    public string Name { get; set; } = string.Empty;
+    public decimal Price { get; set; }
+    public string Category { get; set; } = string.Empty;
+    public int Stock { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedDate { get; set; } = DateTime.UtcNow;
+}
+
+// Derived classes with specific properties
+[BsonDiscriminator("Electronic")]
+public class ElectronicProduct : Product
+{
+    public string Brand { get; set; } = string.Empty;
+    public int WarrantyMonths { get; set; }
+    public string Model { get; set; } = string.Empty;
+    public List<string> Features { get; set; } = new List<string>();
+    public double PowerConsumption { get; set; } // in watts
+}
+
+[BsonDiscriminator("Clothing")]
+public class ClothingProduct : Product
+{
+    public string Size { get; set; } = string.Empty;
+    public string Color { get; set; } = string.Empty;
+    public string Material { get; set; } = string.Empty;
+    public string Gender { get; set; } = string.Empty; // Male, Female, Unisex
+    public string Season { get; set; } = string.Empty; // Summer, Winter, All Season
+}
+
+[BsonDiscriminator("Book")]
+public class BookProduct : Product
+{
+    public string Author { get; set; } = string.Empty;
+    public string ISBN { get; set; } = string.Empty;
+    public int Pages { get; set; }
+    public string Publisher { get; set; } = string.Empty;
+    public DateTime PublishedDate { get; set; }
+    public string Language { get; set; } = string.Empty;
+    public List<string> Genres { get; set; } = new List<string>();
+}
+
+// =================================
+// 2. Add OfType methods to MongoDbRepository
+// =================================
+
+// Add these methods to your MongoDbRepository<TEntity> class:
+
+// Get collection filtered by derived type
+protected IMongoCollection<TDerivedEntity> GetCollectionOfType<TDerivedEntity>() 
+    where TDerivedEntity : class, TEntity
+{
+    return _collection.OfType<TDerivedEntity>();
+}
+
+// Get all documents of specific derived type
+public async Task<List<TDerivedEntity>> GetByTypeAsync<TDerivedEntity>() 
+    where TDerivedEntity : class, TEntity
+{
+    return await _collection.OfType<TDerivedEntity>().Find(_ => true).ToListAsync();
+}
+
+// Get documents of specific type with filter
+public async Task<List<TDerivedEntity>> GetByTypeAsync<TDerivedEntity>(FilterDefinition<TDerivedEntity> filter) 
+    where TDerivedEntity : class, TEntity
+{
+    return await _collection.OfType<TDerivedEntity>().Find(filter).ToListAsync();
+}
+
+// Get single document of specific type by id
+public async Task<TDerivedEntity?> GetByTypeAsync<TDerivedEntity>(string id) 
+    where TDerivedEntity : class, TEntity
+{
+    return await _collection.OfType<TDerivedEntity>().Find(x => x.Id == id).FirstOrDefaultAsync();
+}
+
+// Count documents of specific type
+public async Task<long> CountByTypeAsync<TDerivedEntity>() 
+    where TDerivedEntity : class, TEntity
+{
+    return await _collection.OfType<TDerivedEntity>().CountDocumentsAsync(_ => true);
+}
+
+// Create document of specific type
+public async Task CreateOfTypeAsync<TDerivedEntity>(TDerivedEntity entity) 
+    where TDerivedEntity : class, TEntity
+{
+    await _collection.OfType<TDerivedEntity>().InsertOneAsync(entity);
+}
+
+// Update document of specific type
+public async Task UpdateOfTypeAsync<TDerivedEntity>(string id, TDerivedEntity entity) 
+    where TDerivedEntity : class, TEntity
+{
+    await _collection.OfType<TDerivedEntity>().ReplaceOneAsync(x => x.Id == id, entity);
+}
+
+// Delete document of specific type
+public async Task RemoveOfTypeAsync<TDerivedEntity>(string id) 
+    where TDerivedEntity : class, TEntity
+{
+    await _collection.OfType<TDerivedEntity>().DeleteOneAsync(x => x.Id == id);
+}
+
+// =================================
+// 3. Add specific methods to ProductService
+// =================================
+
+public class ProductService : MongoDbRepository<Product>
+{
+    public ProductService(IOptions<DatabaseSettings> settings) : base(settings) { }
+
+    // =================================
+    // Electronic Product Methods
+    // =================================
+    
+    public async Task<List<ElectronicProduct>> GetAllElectronicsAsync()
+    {
+        return await GetByTypeAsync<ElectronicProduct>();
+    }
+    
+    public async Task<List<ElectronicProduct>> GetElectronicsByBrandAsync(string brand)
+    {
+        var filter = Builders<ElectronicProduct>.Filter.Eq(e => e.Brand, brand);
+        return await GetByTypeAsync(filter);
+    }
+    
+    public async Task<List<ElectronicProduct>> GetElectronicsWithWarrantyAsync(int minWarrantyMonths)
+    {
+        var filter = Builders<ElectronicProduct>.Filter.Gte(e => e.WarrantyMonths, minWarrantyMonths);
+        return await GetByTypeAsync(filter);
+    }
+    
+    public async Task<List<ElectronicProduct>> GetLowPowerElectronicsAsync(double maxWatts)
+    {
+        var filter = Builders<ElectronicProduct>.Filter.Lte(e => e.PowerConsumption, maxWatts);
+        return await GetByTypeAsync(filter);
+    }
+
+    // =================================
+    // Clothing Product Methods
+    // =================================
+    
+    public async Task<List<ClothingProduct>> GetAllClothingAsync()
+    {
+        return await GetByTypeAsync<ClothingProduct>();
+    }
+    
+    public async Task<List<ClothingProduct>> GetClothingBySizeAsync(string size)
+    {
+        var filter = Builders<ClothingProduct>.Filter.Eq(c => c.Size, size);
+        return await GetByTypeAsync(filter);
+    }
+    
+    public async Task<List<ClothingProduct>> GetClothingByGenderAndSeasonAsync(string gender, string season)
+    {
+        var filter = Builders<ClothingProduct>.Filter.And(
+            Builders<ClothingProduct>.Filter.Eq(c => c.Gender, gender),
+            Builders<ClothingProduct>.Filter.Eq(c => c.Season, season)
+        );
+        return await GetByTypeAsync(filter);
+    }
+    
+    public async Task<List<ClothingProduct>> GetClothingByColorAsync(string color)
+    {
+        var filter = Builders<ClothingProduct>.Filter.Eq(c => c.Color, color);
+        return await GetByTypeAsync(filter);
+    }
+
+    // =================================
+    // Book Product Methods
+    // =================================
+    
+    public async Task<List<BookProduct>> GetAllBooksAsync()
+    {
+        return await GetByTypeAsync<BookProduct>();
+    }
+    
+    public async Task<List<BookProduct>> GetBooksByAuthorAsync(string author)
+    {
+        var filter = Builders<BookProduct>.Filter.Eq(b => b.Author, author);
+        return await GetByTypeAsync(filter);
+    }
+    
+    public async Task<List<BookProduct>> GetBooksByGenreAsync(string genre)
+    {
+        var filter = Builders<BookProduct>.Filter.AnyEq(b => b.Genres, genre);
+        return await GetByTypeAsync(filter);
+    }
+    
+    public async Task<BookProduct?> GetBookByISBNAsync(string isbn)
+    {
+        var filter = Builders<BookProduct>.Filter.Eq(b => b.ISBN, isbn);
+        var books = await GetByTypeAsync(filter);
+        return books.FirstOrDefault();
+    }
+    
+    public async Task<List<BookProduct>> GetRecentBooksAsync(DateTime fromDate)
+    {
+        var filter = Builders<BookProduct>.Filter.Gte(b => b.PublishedDate, fromDate);
+        return await GetByTypeAsync(filter);
+    }
+
+    // =================================
+    // Cross-type Analytics Methods
+    // =================================
+    
+    public async Task<Dictionary<string, long>> GetProductCountsByTypeAsync()
+    {
+        var electronicsCount = await CountByTypeAsync<ElectronicProduct>();
+        var clothingCount = await CountByTypeAsync<ClothingProduct>();
+        var booksCount = await CountByTypeAsync<BookProduct>();
+        
+        return new Dictionary<string, long>
+        {
+            { "Electronics", electronicsCount },
+            { "Clothing", clothingCount },
+            { "Books", booksCount }
+        };
+    }
+    
+    public async Task<List<Product>> GetMostExpensiveByTypeAsync(int limit = 5)
+    {
+        var allProducts = new List<Product>();
+        
+        // Get top expensive from each type
+        var expensiveElectronics = await _collection.OfType<ElectronicProduct>()
+            .Find(_ => true)
+            .SortByDescending(e => e.Price)
+            .Limit(limit)
+            .ToListAsync();
+            
+        var expensiveClothing = await _collection.OfType<ClothingProduct>()
+            .Find(_ => true)
+            .SortByDescending(c => c.Price)
+            .Limit(limit)
+            .ToListAsync();
+            
+        var expensiveBooks = await _collection.OfType<BookProduct>()
+            .Find(_ => true)
+            .SortByDescending(b => b.Price)
+            .Limit(limit)
+            .ToListAsync();
+        
+        allProducts.AddRange(expensiveElectronics.Cast<Product>());
+        allProducts.AddRange(expensiveClothing.Cast<Product>());
+        allProducts.AddRange(expensiveBooks.Cast<Product>());
+        
+        return allProducts.OrderByDescending(p => p.Price).Take(limit).ToList();
+    }
+}
+
+// =================================
+// 4. Controller implementation
+// =================================
+
+[ApiController]
+[Route("api/[controller]")]
+public class ProductDataController : Controller
+{
+    private readonly ProductService _productService;
+    
+    public ProductDataController(ProductService productService)
+    {
+        _productService = productService;
+    }
+    
+    // =================================
+    // Electronics Endpoints
+    // =================================
+    
+    [HttpGet("electronics")]
+    public async Task<ActionResult<List<ElectronicProduct>>> GetAllElectronics()
+    {
+        try
+        {
+            var electronics = await _productService.GetAllElectronicsAsync();
+            return Ok(electronics);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting electronics: {ex.Message}");
+        }
+    }
+    
+    [HttpGet("electronics/brand/{brand}")]
+    public async Task<ActionResult<List<ElectronicProduct>>> GetElectronicsByBrand(string brand)
+    {
+        try
+        {
+            var electronics = await _productService.GetElectronicsByBrandAsync(brand);
+            return Ok(electronics);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting electronics by brand: {ex.Message}");
+        }
+    }
+    
+    [HttpGet("electronics/warranty/{minMonths}")]
+    public async Task<ActionResult<List<ElectronicProduct>>> GetElectronicsWithWarranty(int minMonths)
+    {
+        try
+        {
+            var electronics = await _productService.GetElectronicsWithWarrantyAsync(minMonths);
+            return Ok(electronics);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting electronics with warranty: {ex.Message}");
+        }
+    }
+    
+    [HttpGet("electronics/low-power")]
+    public async Task<ActionResult<List<ElectronicProduct>>> GetLowPowerElectronics([FromQuery] double maxWatts = 100)
+    {
+        try
+        {
+            var electronics = await _productService.GetLowPowerElectronicsAsync(maxWatts);
+            return Ok(electronics);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting low power electronics: {ex.Message}");
+        }
+    }
+    
+    // =================================
+    // Clothing Endpoints
+    // =================================
+    
+    [HttpGet("clothing")]
+    public async Task<ActionResult<List<ClothingProduct>>> GetAllClothing()
+    {
+        try
+        {
+            var clothing = await _productService.GetAllClothingAsync();
+            return Ok(clothing);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting clothing: {ex.Message}");
+        }
+    }
+    
+    [HttpGet("clothing/size/{size}")]
+    public async Task<ActionResult<List<ClothingProduct>>> GetClothingBySize(string size)
+    {
+        try
+        {
+            var clothing = await _productService.GetClothingBySizeAsync(size);
+            return Ok(clothing);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting clothing by size: {ex.Message}");
+        }
+    }
+    
+    [HttpGet("clothing/filter")]
+    public async Task<ActionResult<List<ClothingProduct>>> GetClothingByGenderAndSeason([FromQuery] string gender, [FromQuery] string season)
+    {
+        try
+        {
+            var clothing = await _productService.GetClothingByGenderAndSeasonAsync(gender, season);
+            return Ok(clothing);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting clothing by filter: {ex.Message}");
+        }
+    }
+    
+    // =================================
+    // Books Endpoints
+    // =================================
+    
+    [HttpGet("books")]
+    public async Task<ActionResult<List<BookProduct>>> GetAllBooks()
+    {
+        try
+        {
+            var books = await _productService.GetAllBooksAsync();
+            return Ok(books);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting books: {ex.Message}");
+        }
+    }
+    
+    [HttpGet("books/author/{author}")]
+    public async Task<ActionResult<List<BookProduct>>> GetBooksByAuthor(string author)
+    {
+        try
+        {
+            var books = await _productService.GetBooksByAuthorAsync(author);
+            return Ok(books);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting books by author: {ex.Message}");
+        }
+    }
+    
+    [HttpGet("books/isbn/{isbn}")]
+    public async Task<ActionResult<BookProduct>> GetBookByISBN(string isbn)
+    {
+        try
+        {
+            var book = await _productService.GetBookByISBNAsync(isbn);
+            if (book == null)
+            {
+                return NotFound($"Book with ISBN {isbn} not found");
+            }
+            return Ok(book);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting book by ISBN: {ex.Message}");
+        }
+    }
+    
+    [HttpGet("books/genre/{genre}")]
+    public async Task<ActionResult<List<BookProduct>>> GetBooksByGenre(string genre)
+    {
+        try
+        {
+            var books = await _productService.GetBooksByGenreAsync(genre);
+            return Ok(books);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting books by genre: {ex.Message}");
+        }
+    }
+    
+    // =================================
+    // Analytics Endpoints
+    // =================================
+    
+    [HttpGet("analytics/counts-by-type")]
+    public async Task<ActionResult<Dictionary<string, long>>> GetProductCountsByType()
+    {
+        try
+        {
+            var counts = await _productService.GetProductCountsByTypeAsync();
+            return Ok(counts);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting counts by type: {ex.Message}");
+        }
+    }
+    
+    [HttpGet("analytics/most-expensive")]
+    public async Task<ActionResult<List<Product>>> GetMostExpensiveByType([FromQuery] int limit = 5)
+    {
+        try
+        {
+            var products = await _productService.GetMostExpensiveByTypeAsync(limit);
+            return Ok(products);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error getting most expensive products: {ex.Message}");
+        }
+    }
+}
+
+// =================================
+// 5. Example usage in Program.cs or Startup.cs
+// =================================
+
+// Register BsonClassMap for inheritance hierarchy
+public static class BsonMappingConfiguration
+{
+    public static void Configure()
+    {
+        // Configure discriminators for inheritance
+        BsonClassMap.RegisterClassMap<Product>(cm =>
+        {
+            cm.AutoMap();
+            cm.SetIsRootClass(true);
+            cm.SetDiscriminator("Product");
+        });
+        
+        BsonClassMap.RegisterClassMap<ElectronicProduct>(cm =>
+        {
+            cm.AutoMap();
+            cm.SetDiscriminator("Electronic");
+        });
+        
+        BsonClassMap.RegisterClassMap<ClothingProduct>(cm =>
+        {
+            cm.AutoMap();
+            cm.SetDiscriminator("Clothing");
+        });
+        
+        BsonClassMap.RegisterClassMap<BookProduct>(cm =>
+        {
+            cm.AutoMap();
+            cm.SetDiscriminator("Book");
+        });
+    }
+}
+What OfType<TDerivedDocument>() Does:
+The OfType<T>() method creates a filtered view of your collection that only works with documents of a specific derived type. MongoDB automatically adds discriminator filters to all operations.
+Key Concepts:
+1. Discriminators:
+MongoDB stores a _t field (discriminator) to identify the actual type:
+
+{
+  "_id": "...",
+  "_t": "Electronic",
+  "Name": "iPhone 15",
+  "Price": 999,
+  "Brand": "Apple",
+  "WarrantyMonths": 12
+}
+2. Automatic Filtering:
+When you use OfType<ElectronicProduct>(), MongoDB automatically adds { "_t": "Electronic" } to all queries.
+3. Type Safety:
+You get strongly-typed access to derived class properties without casting.
+Usage Examples:
+API Calls:
+# Get all electronics
+GET /api/ProductData/electronics
+
+# Get electronics by brand
+GET /api/ProductData/electronics/brand/Apple
+
+# Get clothing by size
+GET /api/ProductData/clothing/size/Large
+
+# Get books by author
+GET /api/ProductData/books/author/Stephen King
+
+# Get analytics
+GET /api/ProductData/analytics/counts-by-type
+
+Sample Responses:
+Electronics:
+[
+  {
+    "_id": "...",
+    "_t": "Electronic",
+    "name": "iPhone 15",
+    "price": 999,
+    "brand": "Apple",
+    "warrantyMonths": 12,
+    "features": ["5G", "Face ID", "Wireless Charging"]
+  }
+]
+
+Analytics:
+json{
+  "Electronics": 25,
+  "Clothing": 18,
+  "Books": 12
+}
+Benefits of OfType:
+
+Type Safety - No casting needed
+Performance - Automatic discriminator filtering
+Clean Code - Specific methods for each type
+Polymorphism - Store different types in same collection
+Flexible Queries - Type-specific filters and operations
+
+This approach is perfect when you have related entities (like different product types) that share common properties but have type-specific fields and behaviors.
