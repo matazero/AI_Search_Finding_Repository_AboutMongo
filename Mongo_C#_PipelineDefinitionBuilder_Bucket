@@ -1,0 +1,782 @@
+Question directed to Claude Sonnet 4.0: 
+####################################### 
+https://mongodb.github.io/mongo-csharp-driver/3.4.0/api/MongoDB.Driver/MongoDB.Driver.PipelineDefinitionBuilder.Bucket.html. 
+In above link Class PipelineDefinitionBuilder method Bucket is given in PipelineDefinitionBuilder. 
+Can u tell what  is Bucket used for ? Provide some examples.
+
+Answer:
+#######
+The Bucket method in MongoDB's C# driver is used to create a $bucket aggregation stage in the pipeline. The $bucket stage groups documents into buckets based on specified boundaries and a groupBy expression. Method Bucket | MongoDB CSharp Driver API Reference
+What is Bucket used for?
+The Bucket aggregation stage is used for:
+
+Data Distribution Analysis - Grouping documents into ranges (buckets) based on a field value
+Histogram Creation - Creating frequency distributions of data
+Data Categorization - Organizing continuous data into discrete categories
+Statistical Analysis - Analyzing data distribution patterns
+
+How it works:
+
+You specify a field to group by (groupBy expression)
+You define boundary values that create the buckets
+Documents are placed into buckets based on where their groupBy value falls within the boundaries
+Each bucket contains documents whose groupBy value is greater than or equal to the lower boundary and less than the upper boundary
+
+Key Points about the Bucket method:
+
+Boundaries: Define the ranges for grouping. Documents are placed in buckets based on where their groupBy value falls within these boundaries.
+GroupBy Expression: Can be a simple field reference (p => p.Price) or a complex expression.
+Output Projection: Optional parameter to customize the output structure of each bucket.
+Options: Include settings like DefaultBucket for handling values that don't fit in any defined bucket.
+Return Type: Returns AggregateBucketResult<TValue> by default, which contains:
+
+Id: The bucket boundary value
+Count: Number of documents in the bucket
+The Bucket aggregation is particularly useful for creating histograms, analyzing data distribution, and generating reports that categorize continuous data into meaningful ranges.
+
+Code:
+#####
+using MongoDB.Driver;
+using MongoDB.Bson;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+// Sample document class
+public class Product
+{
+    public ObjectId Id { get; set; }
+    public string Name { get; set; }
+    public decimal Price { get; set; }
+    public int Quantity { get; set; }
+    public DateTime CreatedDate { get; set; }
+}
+
+public class BucketExamples
+{
+    private IMongoCollection<Product> _products;
+
+    public BucketExamples(IMongoCollection<Product> products)
+    {
+        _products = products;
+    }
+
+    // Example 1: Basic Price Range Buckets
+    public async Task<List<AggregateBucketResult<decimal>>> PriceRangeBuckets()
+    {
+        var boundaries = new decimal[] { 0, 50, 100, 200, 500 };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Bucket(
+                groupBy: p => p.Price,
+                boundaries: boundaries
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+        
+        // This creates buckets:
+        // [0, 50) - products with price >= 0 and < 50
+        // [50, 100) - products with price >= 50 and < 100  
+        // [100, 200) - products with price >= 100 and < 200
+        // [200, 500) - products with price >= 200 and < 500
+        // [500, ∞) - products with price >= 500 (implicit final bucket)
+    }
+
+    // Example 2: Bucket with Custom Output Projection
+    public async Task<List<BsonDocument>> PriceBucketsWithCustomOutput()
+    {
+        var boundaries = new decimal[] { 0, 100, 300, 1000 };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Bucket(
+                groupBy: p => p.Price,
+                boundaries: boundaries,
+                output: group => new BsonDocument
+                {
+                    { "_id", group.Key },
+                    { "count", group.Count() },
+                    { "averagePrice", group.Average(p => p.Price) },
+                    { "totalQuantity", group.Sum(p => p.Quantity) },
+                    { "products", group.Select(p => p.Name).ToArray() }
+                }
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Example 3: Date-based Buckets (by month)
+    public async Task<List<AggregateBucketResult<DateTime>>> MonthlyBuckets()
+    {
+        var currentYear = DateTime.Now.Year;
+        var boundaries = new DateTime[]
+        {
+            new DateTime(currentYear, 1, 1),
+            new DateTime(currentYear, 4, 1),  // Q1
+            new DateTime(currentYear, 7, 1),  // Q2  
+            new DateTime(currentYear, 10, 1), // Q3
+            new DateTime(currentYear + 1, 1, 1) // Q4
+        };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Bucket(
+                groupBy: p => p.CreatedDate,
+                boundaries: boundaries
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Example 4: Quantity Buckets with Options
+    public async Task<List<AggregateBucketResult<int>>> QuantityBucketsWithOptions()
+    {
+        var boundaries = new int[] { 0, 10, 50, 100 };
+        
+        var options = new AggregateBucketOptions<int>
+        {
+            DefaultBucket = "Others" // For values outside all boundaries
+        };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Bucket(
+                groupBy: p => p.Quantity,
+                boundaries: boundaries,
+                options: options
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Example 5: Complex Pipeline with Match before Bucket
+    public async Task<List<BsonDocument>> RecentProductsPriceBuckets()
+    {
+        var thirtyDaysAgo = DateTime.Now.AddDays(-30);
+        var boundaries = new decimal[] { 0, 25, 75, 150, 300 };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Match(p => p.CreatedDate >= thirtyDaysAgo)
+            .Bucket(
+                groupBy: p => p.Price,
+                boundaries: boundaries,
+                output: group => new BsonDocument
+                {
+                    { "_id", group.Key },
+                    { "productCount", group.Count() },
+                    { "averagePrice", group.Average(p => p.Price) },
+                    { "priceRange", $"{group.Key} - {boundaries.FirstOrDefault(b => b > group.Key)}" }
+                }
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Example 6: Using AggregateExpressionDefinition for complex groupBy
+    public async Task<List<AggregateBucketResult<int>>> PriceTierBuckets()
+    {
+        // Group by price tier calculation: Price * Quantity
+        var groupByExpression = new ExpressionAggregateExpressionDefinition<Product, int>(
+            p => (int)(p.Price * p.Quantity)
+        );
+        
+        var boundaries = new int[] { 0, 100, 500, 1000, 5000 };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Bucket(
+                groupBy: groupByExpression,
+                boundaries: boundaries
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+}
+
+// Usage example
+public class Program
+{
+    public static async Task Main()
+    {
+        // Assuming you have a MongoDB connection setup
+        var client = new MongoClient("mongodb://localhost:27017");
+        var database = client.GetDatabase("ecommerce");
+        var collection = database.GetCollection<Product>("products");
+        
+        var examples = new BucketExamples(collection);
+        
+        // Get price distribution
+        var priceDistribution = await examples.PriceRangeBuckets();
+        
+        foreach (var bucket in priceDistribution)
+        {
+            Console.WriteLine($"Price range {bucket.Id}: {bucket.Count} products");
+        }
+    }
+}
+
+Quuestion2:
+###########
+public async Task<List<AggregateBucketResult<decimal>>> PriceRangeBucketsV2()
+{
+    // Updated boundaries to handle decimal prices like 444.99
+    var boundaries = new decimal[] { 0.00m, 50.00m, 100.00m, 200.00m, 500.00m };
+    // Build the $match stage to check for numeric, non-null, and existing 'price' field
+    // Correct the field name to 'Price' to match the C# model property
+    var matchStage = new BsonDocument("$match",
+     new BsonDocument("$and", new BsonArray
+     {
+        // Check for Price existence and non-null value
+        new BsonDocument("price", new BsonDocument("$exists", true)),
+        new BsonDocument("price", new BsonDocument("$ne", BsonNull.Value)),
+
+        // Use $or to check for either a standard number type OR the BSON Decimal type
+        new BsonDocument("$or", new BsonArray
+        {
+            new BsonDocument("price", new BsonDocument("$type", "number")), // Catches doubles, ints, longs
+            new BsonDocument("price", new BsonDocument("$type", "decimal"))  // Catches BSON Decimal128
+        }),
+
+        // Ensure price is non-negative
+        new BsonDocument("price", new BsonDocument("$gte", 0.00))
+     })
+    );
+    var pipeline = new EmptyPipelineDefinition<Product>()
+    // Add a $match stage to filter out documents where 'Price' is null or not a number
+     .AppendStage<Product, Product, Product>(matchStage) // Use AppendStage to add the BsonDocument
+     .Bucket(
+         groupBy: p => p.Price,
+         boundaries: boundaries
+     );
+    var result = await _collection.Aggregate(pipeline).ToListAsync();
+    return result;
+    // This creates buckets:
+    // [0, 50) - products with price >= 0 and < 50
+    // [50, 100) - products with price >= 50 and < 100  
+    // [100, 200) - products with price >= 100 and < 200
+    // [200, 500) - products with price >= 200 and < 500
+    // [500, ∞) - products with price >= 500 (implicit final bucket)
+} 
+
+Question 2:
+############
+I have a code like this code gives error Command aggregate failed: PlanExecutor error during aggregation :: caused by :: $switch could not find a matching branch for an input, and no default was specified.  But when I use 
+var boundaries = new decimal[] { 0.00m, 50.00m, 100.00m, 200.00m, 500.00m, 5000.00m }; it did not give error. I have a price 4949. Why is it so meaningless
+
+Answer:
+#######
+The error you're encountering is a classic MongoDB $bucket behavior issue. Let me explain what's happening and why adding 5000.00m fixes it.
+The Problem
+In MongoDB's $bucket aggregation, documents are placed into buckets based on this logic:
+
+A document goes into a bucket if its groupBy value is >= lower_boundary and < upper_boundary
+Crucially: If a document's value is >= the highest boundary, it has nowhere to go unless you explicitly handle it
+
+In your case:
+
+Your boundaries are: [0.00, 50.00, 100.00, 200.00, 500.00]
+This creates buckets: [0-50), [50-100), [100-200), [200-500)
+Your product with price 4949 is >= 500, so it doesn't fit in any bucket
+MongoDB throws the $switch error because there's no matching branch (bucket) for this value
+
+Why Adding 5000.00m Works
+When you add 5000.00m, you create an additional bucket [500-5000), which can accommodate your price of 4949.
+
+Code:
+#####
+using MongoDB.Driver;
+using MongoDB.Bson;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+public class BucketSolutions
+{
+    private IMongoCollection<Product> _collection;
+
+    public BucketSolutions(IMongoCollection<Product> collection)
+    {
+        _collection = collection;
+    }
+
+    // Solution 1: Use DefaultBucket option to catch outliers
+    public async Task<List<AggregateBucketResult<decimal>>> PriceRangeBucketsWithDefault()
+    {
+        var boundaries = new decimal[] { 0.00m, 50.00m, 100.00m, 200.00m, 500.00m };
+        
+        var options = new AggregateBucketOptions<decimal>
+        {
+            DefaultBucket = "500+" // This catches all values >= 500
+        };
+
+        var matchStage = new BsonDocument("$match",
+            new BsonDocument("$and", new BsonArray
+            {
+                new BsonDocument("price", new BsonDocument("$exists", true)),
+                new BsonDocument("price", new BsonDocument("$ne", BsonNull.Value)),
+                new BsonDocument("$or", new BsonArray
+                {
+                    new BsonDocument("price", new BsonDocument("$type", "number")),
+                    new BsonDocument("price", new BsonDocument("$type", "decimal"))
+                }),
+                new BsonDocument("price", new BsonDocument("$gte", 0.00))
+            })
+        );
+
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .AppendStage<Product, Product, Product>(matchStage)
+            .Bucket(
+                groupBy: p => p.Price,
+                boundaries: boundaries,
+                options: options
+            );
+
+        var result = await _collection.Aggregate(pipeline).ToListAsync();
+        return result;
+        
+        // This creates buckets:
+        // [0, 50) - products with price >= 0 and < 50
+        // [50, 100) - products with price >= 50 and < 100  
+        // [100, 200) - products with price >= 100 and < 200
+        // [200, 500) - products with price >= 200 and < 500
+        // "500+" - ALL products with price >= 500 (including your 4949)
+    }
+
+    // Solution 2: Dynamically determine max boundary based on data
+    public async Task<List<AggregateBucketResult<decimal>>> PriceRangeBucketsWithDynamicMax()
+    {
+        // First, find the maximum price in your collection
+        var maxPriceResult = await _collection
+            .Aggregate()
+            .Match(p => p.Price > 0) // Only consider valid prices
+            .Group(new BsonDocument { { "_id", BsonNull.Value }, { "maxPrice", new BsonDocument("$max", "$price") } })
+            .FirstOrDefaultAsync();
+
+        decimal maxPrice = 1000m; // default fallback
+        if (maxPriceResult != null && maxPriceResult.Contains("maxPrice"))
+        {
+            maxPrice = maxPriceResult["maxPrice"].ToDecimal();
+            maxPrice = Math.Ceiling(maxPrice / 100) * 100; // Round up to nearest 100
+        }
+
+        var boundaries = new decimal[] { 0.00m, 50.00m, 100.00m, 200.00m, 500.00m, maxPrice + 1 };
+
+        var matchStage = new BsonDocument("$match",
+            new BsonDocument("$and", new BsonArray
+            {
+                new BsonDocument("price", new BsonDocument("$exists", true)),
+                new BsonDocument("price", new BsonDocument("$ne", BsonNull.Value)),
+                new BsonDocument("$or", new BsonArray
+                {
+                    new BsonDocument("price", new BsonDocument("$type", "number")),
+                    new BsonDocument("price", new BsonDocument("$type", "decimal"))
+                }),
+                new BsonDocument("price", new BsonDocument("$gte", 0.00))
+            })
+        );
+
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .AppendStage<Product, Product, Product>(matchStage)
+            .Bucket(
+                groupBy: p => p.Price,
+                boundaries: boundaries
+            );
+
+        var result = await _collection.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Solution 3: Use $bucketAuto instead of $bucket
+    public async Task<List<BsonDocument>> PriceRangeBucketsAuto()
+    {
+        var matchStage = new BsonDocument("$match",
+            new BsonDocument("$and", new BsonArray
+            {
+                new BsonDocument("price", new BsonDocument("$exists", true)),
+                new BsonDocument("price", new BsonDocument("$ne", BsonNull.Value)),
+                new BsonDocument("$or", new BsonArray
+                {
+                    new BsonDocument("price", new BsonDocument("$type", "number")),
+                    new BsonDocument("price", new BsonDocument("$type", "decimal"))
+                }),
+                new BsonDocument("price", new BsonDocument("$gte", 0.00))
+            })
+        );
+
+        // $bucketAuto automatically determines boundaries based on data distribution
+        var bucketAutoStage = new BsonDocument("$bucketAuto", new BsonDocument
+        {
+            { "groupBy", "$price" },
+            { "buckets", 5 }, // Number of buckets you want
+            { "output", new BsonDocument
+                {
+                    { "count", new BsonDocument("$sum", 1) },
+                    { "avgPrice", new BsonDocument("$avg", "$price") },
+                    { "minPrice", new BsonDocument("$min", "$price") },
+                    { "maxPrice", new BsonDocument("$max", "$price") }
+                }
+            }
+        });
+
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .AppendStage<Product, Product, Product>(matchStage)
+            .AppendStage<Product, BsonDocument, BsonDocument>(bucketAutoStage);
+
+        var result = await _collection.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Solution 4: Filter extreme values before bucketing
+    public async Task<List<AggregateBucketResult<decimal>>> PriceRangeBucketsWithFilter()
+    {
+        var boundaries = new decimal[] { 0.00m, 50.00m, 100.00m, 200.00m, 500.00m };
+        
+        var matchStage = new BsonDocument("$match",
+            new BsonDocument("$and", new BsonArray
+            {
+                new BsonDocument("price", new BsonDocument("$exists", true)),
+                new BsonDocument("price", new BsonDocument("$ne", BsonNull.Value)),
+                new BsonDocument("$or", new BsonArray
+                {
+                    new BsonDocument("price", new BsonDocument("$type", "number")),
+                    new BsonDocument("price", new BsonDocument("$type", "decimal"))
+                }),
+                new BsonDocument("price", new BsonDocument("$gte", 0.00)),
+                new BsonDocument("price", new BsonDocument("$lt", 500.00)) // Only include prices < 500
+            })
+        );
+
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .AppendStage<Product, Product, Product>(matchStage)
+            .Bucket(
+                groupBy: p => p.Price,
+                boundaries: boundaries
+            );
+
+        var result = await _collection.Aggregate(pipeline).ToListAsync();
+        return result;
+
+        // Note: This excludes your 4949 product from the results entirely
+        // You might want to handle expensive items separately
+    }
+
+    // Solution 5: Two-stage approach - regular buckets + expensive items
+    public async Task<dynamic> PriceAnalysisWithExpensiveItems()
+    {
+        var boundaries = new decimal[] { 0.00m, 50.00m, 100.00m, 200.00m, 500.00m };
+        
+        // Regular buckets for items under 500
+        var regularBuckets = await PriceRangeBucketsWithFilter();
+        
+        // Count of expensive items (>= 500)
+        var expensiveItemsCount = await _collection
+            .CountDocumentsAsync(p => p.Price >= 500);
+
+        var expensiveItemsStats = await _collection
+            .Aggregate()
+            .Match(p => p.Price >= 500)
+            .Group(new BsonDocument
+            {
+                { "_id", BsonNull.Value },
+                { "count", new BsonDocument("$sum", 1) },
+                { "avgPrice", new BsonDocument("$avg", "$price") },
+                { "minPrice", new BsonDocument("$min", "$price") },
+                { "maxPrice", new BsonDocument("$max", "$price") }
+            })
+            .FirstOrDefaultAsync();
+
+        return new
+        {
+            RegularBuckets = regularBuckets,
+            ExpensiveItems = new
+            {
+                Count = expensiveItemsCount,
+                Stats = expensiveItemsStats
+            }
+        };
+    }
+
+    // Solution 6: More comprehensive boundaries
+    public async Task<List<AggregateBucketResult<decimal>>> ComprehensivePriceBuckets()
+    {
+        // More comprehensive boundaries that handle a wider range
+        var boundaries = new decimal[] 
+        { 
+            0.00m, 25.00m, 50.00m, 100.00m, 200.00m, 
+            500.00m, 1000.00m, 2500.00m, 5000.00m, 10000.00m 
+        };
+
+        var matchStage = new BsonDocument("$match",
+            new BsonDocument("$and", new BsonArray
+            {
+                new BsonDocument("price", new BsonDocument("$exists", true)),
+                new BsonDocument("price", new BsonDocument("$ne", BsonNull.Value)),
+                new BsonDocument("$or", new BsonArray
+                {
+                    new BsonDocument("price", new BsonDocument("$type", "number")),
+                    new BsonDocument("price", new BsonDocument("$type", "decimal"))
+                }),
+                new BsonDocument("price", new BsonDocument("$gte", 0.00))
+            })
+        );
+
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .AppendStage<Product, Product, Product>(matchStage)
+            .Bucket(
+                groupBy: p => p.Price,
+                boundaries: boundaries
+            );
+
+        var result = await _collection.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+}
+
+Why This Happens - Technical Details
+
+MongoDB's $bucket implementation: Internally uses a $switch statement to determine which bucket a document belongs to
+No matching branch: When a value doesn't match any boundary condition, there's no default case unless you specify one
+Implicit final bucket myth: There's no automatic "catch-all" final bucket - you must explicitly handle it
+
+Recommended Solutions
+For your specific case, I'd recommend Solution 1 (using DefaultBucket) because:
+csharpvar options = new AggregateBucketOptions<decimal>
+{
+    DefaultBucket = "500+" // Catches all values >= 500, including your 4949
+};
+This is clean, explicit, and handles all edge cases without needing to know your data's maximum values in advance.
+Key Takeaways
+
+Always account for values that might exceed your highest boundary
+Use DefaultBucket option for catch-all scenarios
+Consider $bucketAuto if you want MongoDB to automatically determine optimal boundaries
+Test with your actual data range, not just typical values
+
+The error isn't meaningless - it's MongoDB's way of telling you that your bucket definitions don't cover all possible values in your dataset!RetryClaude does not have the ability to run the code it generates yet.
+
+Question3:
+###############
+But you previously said that // This creates buckets: // [0, 50) - products with price >= 0 and < 50 // [50, 100) - products with price >= 50 and < 100 // [100, 200) - products with price >= 100 and < 200 // [200, 500) - products with price >= 200 and < 500 // [500, ∞) - products with price >= 500 (implicit final bucket)   ????EditYou're absolutely right to point that out! I made an error in my previous explanation. There is NO implicit final bucket [500, ∞) in MongoDB's $bucket aggregation.
+
+Answer:
+#########
+
+I apologize for the confusion. Let me correct this:
+What Actually Happens with Boundaries
+When you define boundaries as [0, 50, 100, 200, 500], MongoDB creates exactly these buckets:
+
+[0, 50) - products with price >= 0 and < 50
+[50, 100) - products with price >= 50 and < 100
+[100, 200) - products with price >= 100 and < 200
+[200, 500) - products with price >= 200 and < 500
+
+That's it. No more buckets.
+What Happens to Values >= 500?
+Values that are >= 500 (like your 4949) have nowhere to go. They don't match any bucket condition, which causes the $switch could not find a matching branch error.
+The Truth About MongoDB $bucket
+
+MongoDB $bucket only creates buckets based on the boundary pairs you provide
+There is no automatic final bucket for values beyond the last boundary
+If a document's value doesn't fit in any defined bucket, the operation fails
+You must explicitly handle edge cases using:
+
+Additional boundaries (like adding 5000.00m)
+DefaultBucket option
+Pre-filtering your data
+
+Code:
+#####
+using MongoDB.Driver;
+using MongoDB.Bson;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+// Sample document class
+public class Product
+{
+    public ObjectId Id { get; set; }
+    public string Name { get; set; }
+    public decimal Price { get; set; }
+    public int Quantity { get; set; }
+    public DateTime CreatedDate { get; set; }
+}
+
+public class BucketExamples
+{
+    private IMongoCollection<Product> _products;
+
+    public BucketExamples(IMongoCollection<Product> products)
+    {
+        _products = products;
+    }
+
+    // Example 1: Basic Price Range Buckets
+    public async Task<List<AggregateBucketResult<decimal>>> PriceRangeBuckets()
+    {
+        var boundaries = new decimal[] { 0, 50, 100, 200, 500 };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Bucket(
+                groupBy: p => p.Price,
+                boundaries: boundaries
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+        
+        // This creates ONLY these buckets:
+        // [0, 50) - products with price >= 0 and < 50
+        // [50, 100) - products with price >= 50 and < 100  
+        // [100, 200) - products with price >= 100 and < 200
+        // [200, 500) - products with price >= 200 and < 500
+        // WARNING: Products with price >= 500 will cause an error!
+        // You need DefaultBucket option or additional boundary to handle them.
+    }
+
+    // Example 2: Bucket with Custom Output Projection
+    public async Task<List<BsonDocument>> PriceBucketsWithCustomOutput()
+    {
+        var boundaries = new decimal[] { 0, 100, 300, 1000 };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Bucket(
+                groupBy: p => p.Price,
+                boundaries: boundaries,
+                output: group => new BsonDocument
+                {
+                    { "_id", group.Key },
+                    { "count", group.Count() },
+                    { "averagePrice", group.Average(p => p.Price) },
+                    { "totalQuantity", group.Sum(p => p.Quantity) },
+                    { "products", group.Select(p => p.Name).ToArray() }
+                }
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Example 3: Date-based Buckets (by month)
+    public async Task<List<AggregateBucketResult<DateTime>>> MonthlyBuckets()
+    {
+        var currentYear = DateTime.Now.Year;
+        var boundaries = new DateTime[]
+        {
+            new DateTime(currentYear, 1, 1),
+            new DateTime(currentYear, 4, 1),  // Q1
+            new DateTime(currentYear, 7, 1),  // Q2  
+            new DateTime(currentYear, 10, 1), // Q3
+            new DateTime(currentYear + 1, 1, 1) // Q4
+        };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Bucket(
+                groupBy: p => p.CreatedDate,
+                boundaries: boundaries
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Example 4: Quantity Buckets with Options
+    public async Task<List<AggregateBucketResult<int>>> QuantityBucketsWithOptions()
+    {
+        var boundaries = new int[] { 0, 10, 50, 100 };
+        
+        var options = new AggregateBucketOptions<int>
+        {
+            DefaultBucket = "Others" // For values outside all boundaries
+        };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Bucket(
+                groupBy: p => p.Quantity,
+                boundaries: boundaries,
+                options: options
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Example 5: Complex Pipeline with Match before Bucket
+    public async Task<List<BsonDocument>> RecentProductsPriceBuckets()
+    {
+        var thirtyDaysAgo = DateTime.Now.AddDays(-30);
+        var boundaries = new decimal[] { 0, 25, 75, 150, 300 };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Match(p => p.CreatedDate >= thirtyDaysAgo)
+            .Bucket(
+                groupBy: p => p.Price,
+                boundaries: boundaries,
+                output: group => new BsonDocument
+                {
+                    { "_id", group.Key },
+                    { "productCount", group.Count() },
+                    { "averagePrice", group.Average(p => p.Price) },
+                    { "priceRange", $"{group.Key} - {boundaries.FirstOrDefault(b => b > group.Key)}" }
+                }
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Example 6: Using AggregateExpressionDefinition for complex groupBy
+    public async Task<List<AggregateBucketResult<int>>> PriceTierBuckets()
+    {
+        // Group by price tier calculation: Price * Quantity
+        var groupByExpression = new ExpressionAggregateExpressionDefinition<Product, int>(
+            p => (int)(p.Price * p.Quantity)
+        );
+        
+        var boundaries = new int[] { 0, 100, 500, 1000, 5000 };
+        
+        var pipeline = new EmptyPipelineDefinition<Product>()
+            .Bucket(
+                groupBy: groupByExpression,
+                boundaries: boundaries
+            );
+
+        var result = await _products.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+}
+
+// Usage example
+public class Program
+{
+    public static async Task Main()
+    {
+        // Assuming you have a MongoDB connection setup
+        var client = new MongoClient("mongodb://localhost:27017");
+        var database = client.GetDatabase("ecommerce");
+        var collection = database.GetCollection<Product>("products");
+        
+        var examples = new BucketExamples(collection);
+        
+        // Get price distribution
+        var priceDistribution = await examples.PriceRangeBuckets();
+        
+        foreach (var bucket in priceDistribution)
+        {
+            Console.WriteLine($"Price range {bucket.Id}: {bucket.Count} products");
+        }
+    }
+}
+
+Thank you for catching my mistake! This is exactly why your code fails with price 4949 - there's no bucket to accommodate it, and my earlier comment about an "implicit final bucket" was completely wrong.
+The solutions I provided in my second response are correct:
+
+Use DefaultBucket option
+Add more boundaries (like 5000.00m)
+Use $bucketAuto instead
+Pre-filter your data
+
+But my initial explanation was misleading about the implicit final bucket. MongoDB $bucket is strict about boundaries - if you don't define a place for a value, it will fail.
