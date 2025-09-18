@@ -1,0 +1,460 @@
+Question: I have two working codes are: I want to implement also BucketAuto examples can u provide diverse versatile examples of it using same api syntax structure 
+###########
+
+Answer:
+#######
+I'll provide you with diverse and versatile examples of BucketAuto using the same API syntax structure. BucketAuto automatically determines bucket boundaries based on your data distribution, 
+which is very useful when you don't know the optimal boundaries in advance.
+
+Code:
+#####
+// ==========================================
+// BUCKETAUTO EXAMPLES - DIVERSE USE CASES
+// ==========================================
+
+// Example 1: Basic Price Range Auto-Bucketing
+public async Task<List<AggregateBucketAutoResult<decimal>>> PriceRangeAutoBucketsBasic()
+{
+    var matchStage = new BsonDocument("$match",
+        new BsonDocument("$and", new BsonArray
+        {
+            new BsonDocument("price", new BsonDocument("$exists", true)),
+            new BsonDocument("price", new BsonDocument("$ne", BsonNull.Value)),
+            new BsonDocument("$or", new BsonArray
+            {
+                new BsonDocument("price", new BsonDocument("$type", "number")),
+                new BsonDocument("price", new BsonDocument("$type", "decimal"))
+            }),
+            new BsonDocument("price", new BsonDocument("$gte", 0.00))
+        })
+    );
+
+    var pipeline = new EmptyPipelineDefinition<Product>()
+        .AppendStage<Product, Product, Product>(matchStage)
+        .BucketAuto(
+            groupBy: p => p.Price,
+            buckets: 5  // MongoDB will create 5 buckets with optimal boundaries
+        );
+
+    var result = await _collection.Aggregate(pipeline).ToListAsync();
+    return result;
+}
+
+// Example 2: Price Auto-Bucketing with Custom Output Fields
+public async Task<List<BsonDocument>> PriceRangeAutoBucketsWithOutput()
+{
+    var matchStage = new BsonDocument("$match",
+        new BsonDocument("price", new BsonDocument("$gte", 0.00)));
+
+    var bucketAutoStage = new BsonDocument("$bucketAuto", new BsonDocument
+    {
+        {"groupBy", "$price"},
+        {"buckets", 6},
+        {"output", new BsonDocument
+            {
+                {"count", new BsonDocument("$sum", 1)},
+                {"avgPrice", new BsonDocument("$avg", "$price")},
+                {"minPrice", new BsonDocument("$min", "$price")},
+                {"maxPrice", new BsonDocument("$max", "$price")},
+                {"totalRevenue", new BsonDocument("$sum", "$price")},
+                {"products", new BsonDocument("$push", new BsonDocument
+                    {
+                        {"name", "$name"},
+                        {"price", "$price"},
+                        {"category", "$category"}
+                    })
+                }
+            }
+        }
+    });
+
+    var pipeline = new BsonDocument[]
+    {
+        matchStage,
+        bucketAutoStage
+    };
+
+    var result = await _collection.Aggregate<BsonDocument>(pipeline).ToListAsync();
+    return result;
+}
+
+// Example 3: Rating-Based Auto-Bucketing
+public async Task<List<AggregateBucketAutoResult<double>>> RatingAutoBuckets()
+{
+    var matchStage = new BsonDocument("$match",
+        new BsonDocument("$and", new BsonArray
+        {
+            new BsonDocument("rating", new BsonDocument("$exists", true)),
+            new BsonDocument("rating", new BsonDocument("$ne", BsonNull.Value)),
+            new BsonDocument("rating", new BsonDocument("$gte", 0.0)),
+            new BsonDocument("rating", new BsonDocument("$lte", 5.0))
+        })
+    );
+
+    var pipeline = new EmptyPipelineDefinition<Product>()
+        .AppendStage<Product, Product, Product>(matchStage)
+        .BucketAuto(
+            groupBy: p => p.Rating,
+            buckets: 4  // Create 4 rating buckets automatically
+        );
+
+    var result = await _collection.Aggregate(pipeline).ToListAsync();
+    return result;
+}
+
+// Example 4: Date-Based Auto-Bucketing (CreatedDate)
+public async Task<List<BsonDocument>> DateCreatedAutoBuckets()
+{
+    var matchStage = new BsonDocument("$match",
+        new BsonDocument("$and", new BsonArray
+        {
+            new BsonDocument("createdDate", new BsonDocument("$exists", true)),
+            new BsonDocument("createdDate", new BsonDocument("$ne", BsonNull.Value))
+        })
+    );
+
+    var bucketAutoStage = new BsonDocument("$bucketAuto", new BsonDocument
+    {
+        {"groupBy", "$createdDate"},
+        {"buckets", 8}, // 8 time-based buckets
+        {"granularity", "R20"}, // Use R20 granularity for nice boundaries
+        {"output", new BsonDocument
+            {
+                {"count", new BsonDocument("$sum", 1)},
+                {"earliestDate", new BsonDocument("$min", "$createdDate")},
+                {"latestDate", new BsonDocument("$max", "$createdDate")},
+                {"avgPrice", new BsonDocument("$avg", "$price")},
+                {"categories", new BsonDocument("$addToSet", "$category")}
+            }
+        }
+    });
+
+    var pipeline = new BsonDocument[]
+    {
+        matchStage,
+        bucketAutoStage
+    };
+
+    var result = await _collection.Aggregate<BsonDocument>(pipeline).ToListAsync();
+    return result;
+}
+
+// Example 5: Stock Quantity Auto-Bucketing with Granularity
+public async Task<List<BsonDocument>> StockQuantityAutoBucketsWithGranularity()
+{
+    var matchStage = new BsonDocument("$match",
+        new BsonDocument("$and", new BsonArray
+        {
+            new BsonDocument("stockQuantity", new BsonDocument("$exists", true)),
+            new BsonDocument("stockQuantity", new BsonDocument("$gte", 0))
+        })
+    );
+
+    var bucketAutoStage = new BsonDocument("$bucketAuto", new BsonDocument
+    {
+        {"groupBy", "$stockQuantity"},
+        {"buckets", 5},
+        {"granularity", "POWERSOF2"}, // Use powers of 2 for boundaries (1, 2, 4, 8, 16, etc.)
+        {"output", new BsonDocument
+            {
+                {"count", new BsonDocument("$sum", 1)},
+                {"totalStock", new BsonDocument("$sum", "$stockQuantity")},
+                {"avgStock", new BsonDocument("$avg", "$stockQuantity")},
+                {"lowStockItems", new BsonDocument("$sum", new BsonDocument("$cond", new BsonArray
+                    {
+                        new BsonDocument("$lt", new BsonArray {"$stockQuantity", 10}),
+                        1,
+                        0
+                    }))
+                }
+            }
+        }
+    });
+
+    var pipeline = new BsonDocument[]
+    {
+        matchStage,
+        bucketAutoStage
+    };
+
+    var result = await _collection.Aggregate<BsonDocument>(pipeline).ToListAsync();
+    return result;
+}
+
+// Example 6: Multi-Field Expression Auto-Bucketing (Price per Rating Ratio)
+public async Task<List<BsonDocument>> PricePerRatingRatioAutoBuckets()
+{
+    var matchStage = new BsonDocument("$match",
+        new BsonDocument("$and", new BsonArray
+        {
+            new BsonDocument("price", new BsonDocument("$gt", 0)),
+            new BsonDocument("rating", new BsonDocument("$gt", 0))
+        })
+    );
+
+    var bucketAutoStage = new BsonDocument("$bucketAuto", new BsonDocument
+    {
+        {"groupBy", new BsonDocument("$divide", new BsonArray {"$price", "$rating"})}, // Price/Rating ratio
+        {"buckets", 6},
+        {"output", new BsonDocument
+            {
+                {"count", new BsonDocument("$sum", 1)},
+                {"avgPriceRatingRatio", new BsonDocument("$avg", new BsonDocument("$divide", new BsonArray {"$price", "$rating"}))},
+                {"avgPrice", new BsonDocument("$avg", "$price")},
+                {"avgRating", new BsonDocument("$avg", "$rating")},
+                {"bestValueProducts", new BsonDocument("$push", new BsonDocument
+                    {
+                        {"name", "$name"},
+                        {"price", "$price"},
+                        {"rating", "$rating"},
+                        {"pricePerRating", new BsonDocument("$divide", new BsonArray {"$price", "$rating"})}
+                    })
+                }
+            }
+        }
+    });
+
+    var pipeline = new BsonDocument[]
+    {
+        matchStage,
+        bucketAutoStage
+    };
+
+    var result = await _collection.Aggregate<BsonDocument>(pipeline).ToListAsync();
+    return result;
+}
+
+// Example 7: Category-wise Price Distribution Auto-Bucketing
+public async Task<List<BsonDocument>> CategoryWisePriceDistribution()
+{
+    var pipeline = new BsonDocument[]
+    {
+        // First group by category to get price distribution per category
+        new BsonDocument("$match", new BsonDocument
+        {
+            {"price", new BsonDocument("$gte", 0)},
+            {"category", new BsonDocument("$exists", true)}
+        }),
+        
+        new BsonDocument("$group", new BsonDocument
+        {
+            {"_id", "$category"},
+            {"prices", new BsonDocument("$push", "$price")},
+            {"avgPrice", new BsonDocument("$avg", "$price")},
+            {"count", new BsonDocument("$sum", 1)}
+        }),
+        
+        // Then apply bucketAuto on average prices
+        new BsonDocument("$bucketAuto", new BsonDocument
+        {
+            {"groupBy", "$avgPrice"},
+            {"buckets", 4},
+            {"output", new BsonDocument
+                {
+                    {"categoryCount", new BsonDocument("$sum", 1)},
+                    {"totalProducts", new BsonDocument("$sum", "$count")},
+                    {"categories", new BsonDocument("$push", new BsonDocument
+                        {
+                            {"category", "$_id"},
+                            {"avgPrice", "$avgPrice"},
+                            {"productCount", "$count"}
+                        })
+                    },
+                    {"overallAvgPrice", new BsonDocument("$avg", "$avgPrice")}
+                }
+            }
+        })
+    };
+
+    var result = await _collection.Aggregate<BsonDocument>(pipeline).ToListAsync();
+    return result;
+}
+
+// Example 8: Time-based Auto-Bucketing with Custom Boundaries (Last Update)
+public async Task<List<BsonDocument>> LastUpdatedAutoBuckets()
+{
+    var pipeline = new BsonDocument[]
+    {
+        new BsonDocument("$match", new BsonDocument
+        {
+            {"lastUpdated", new BsonDocument("$exists", true)},
+            {"lastUpdated", new BsonDocument("$ne", BsonNull.Value)}
+        }),
+        
+        // Add a calculated field for days since last update
+        new BsonDocument("$addFields", new BsonDocument
+        {
+            {"daysSinceUpdate", new BsonDocument("$divide", new BsonArray
+                {
+                    new BsonDocument("$subtract", new BsonArray {"$$NOW", "$lastUpdated"}),
+                    86400000 // milliseconds in a day
+                })
+            }
+        }),
+        
+        new BsonDocument("$bucketAuto", new BsonDocument
+        {
+            {"groupBy", "$daysSinceUpdate"},
+            {"buckets", 5},
+            {"granularity", "1-2-5"}, // Use 1-2-5 granularity for nice time boundaries
+            {"output", new BsonDocument
+                {
+                    {"count", new BsonDocument("$sum", 1)},
+                    {"avgDaysSinceUpdate", new BsonDocument("$avg", "$daysSinceUpdate")},
+                    {"oldestUpdate", new BsonDocument("$min", "$lastUpdated")},
+                    {"newestUpdate", new BsonDocument("$max", "$lastUpdated")},
+                    {"needsUpdateSoon", new BsonDocument("$sum", new BsonDocument("$cond", new BsonArray
+                        {
+                            new BsonDocument("$gt", new BsonArray {"$daysSinceUpdate", 30}),
+                            1,
+                            0
+                        }))
+                    }
+                }
+            }
+        })
+    };
+
+    var result = await _collection.Aggregate<BsonDocument>(pipeline).ToListAsync();
+    return result;
+}
+
+// Example 9: Advanced BucketAuto with String Length Distribution
+public async Task<List<BsonDocument>> ProductNameLengthAutoBuckets()
+{
+    var pipeline = new BsonDocument[]
+    {
+        new BsonDocument("$match", new BsonDocument
+        {
+            {"name", new BsonDocument("$exists", true)},
+            {"name", new BsonDocument("$ne", "")},
+            {"name", new BsonDocument("$ne", BsonNull.Value)}
+        }),
+        
+        new BsonDocument("$addFields", new BsonDocument
+        {
+            {"nameLength", new BsonDocument("$strLenCP", "$name")}
+        }),
+        
+        new BsonDocument("$bucketAuto", new BsonDocument
+        {
+            {"groupBy", "$nameLength"},
+            {"buckets", 4},
+            {"output", new BsonDocument
+                {
+                    {"count", new BsonDocument("$sum", 1)},
+                    {"avgNameLength", new BsonDocument("$avg", "$nameLength")},
+                    {"shortestName", new BsonDocument("$min", "$nameLength")},
+                    {"longestName", new BsonDocument("$max", "$nameLength")},
+                    {"sampleNames", new BsonDocument("$push", new BsonDocument
+                        {
+                            {"name", "$name"},
+                            {"length", "$nameLength"}
+                        })
+                    }
+                }
+            }
+        })
+    };
+
+    var result = await _collection.Aggregate<BsonDocument>(pipeline).ToListAsync();
+    return result;
+}
+
+// Example 10: Comprehensive Analytics with BucketAuto and Post-Processing
+public async Task<List<ProductAnalyticsBucketDto>> ComprehensiveProductAnalytics()
+{
+    var pipeline = new BsonDocument[]
+    {
+        new BsonDocument("$match", new BsonDocument
+        {
+            {"price", new BsonDocument("$gte", 0)},
+            {"rating", new BsonDocument("$gte", 0)}
+        }),
+        
+        // Calculate a composite score (price * rating)
+        new BsonDocument("$addFields", new BsonDocument
+        {
+            {"compositeScore", new BsonDocument("$multiply", new BsonArray {"$price", "$rating"})}
+        }),
+        
+        new BsonDocument("$bucketAuto", new BsonDocument
+        {
+            {"groupBy", "$compositeScore"},
+            {"buckets", 5},
+            {"output", new BsonDocument
+                {
+                    {"count", new BsonDocument("$sum", 1)},
+                    {"avgCompositeScore", new BsonDocument("$avg", "$compositeScore")},
+                    {"avgPrice", new BsonDocument("$avg", "$price")},
+                    {"avgRating", new BsonDocument("$avg", "$rating")},
+                    {"totalRevenue", new BsonDocument("$sum", "$price")},
+                    {"categories", new BsonDocument("$addToSet", "$category")},
+                    {"topProducts", new BsonDocument("$push", new BsonDocument
+                        {
+                            {"name", "$name"},
+                            {"price", "$price"},
+                            {"rating", "$rating"},
+                            {"category", "$category"},
+                            {"compositeScore", "$compositeScore"}
+                        })
+                    }
+                }
+            }
+        }),
+        
+        // Sort buckets by their minimum boundary
+        new BsonDocument("$sort", new BsonDocument("_id.min", 1))
+    };
+
+    var results = await _collection.Aggregate<BsonDocument>(pipeline).ToListAsync();
+    
+    // Convert to DTOs
+    var buckets = new List<ProductAnalyticsBucketDto>();
+    foreach (var result in results)
+    {
+        var id = result["_id"].AsBsonDocument;
+        
+        buckets.Add(new ProductAnalyticsBucketDto
+        {
+            MinCompositeScore = id["min"].ToDecimal(),
+            MaxCompositeScore = id["max"].ToDecimal(),
+            Count = result["count"].AsInt32,
+            AvgCompositeScore = result["avgCompositeScore"].ToDecimal(),
+            AvgPrice = result["avgPrice"].ToDecimal(),
+            AvgRating = result["avgRating"].ToDouble(),
+            TotalRevenue = result["totalRevenue"].ToDecimal(),
+            Categories = result["categories"].AsBsonArray.Select(x => x.AsString).ToList(),
+            TopProducts = result["topProducts"].AsBsonArray.Select(x => x.AsBsonDocument).ToList()
+        });
+    }
+    
+    return buckets;
+}
+
+// Supporting DTO for the comprehensive example
+public class ProductAnalyticsBucketDto
+{
+    public decimal MinCompositeScore { get; set; }
+    public decimal MaxCompositeScore { get; set; }
+    public int Count { get; set; }
+    public decimal AvgCompositeScore { get; set; }
+    public decimal AvgPrice { get; set; }
+    public double AvgRating { get; set; }
+    public decimal TotalRevenue { get; set; }
+    public List<string> Categories { get; set; } = new();
+    public List<BsonDocument> TopProducts { get; set; } = new();
+}
+
+// Granularity Options Reference:
+// "R5", "R10", "R20", "R40", "R80" - Renard series
+// "1-2-5" - Common for measurements
+// "E6", "E12", "E24", "E48", "E96", "E192" - Electronic component values
+// "POWERSOF2" - Powers of 2 (1, 2, 4, 8, 16, 32, ...)
+
+// Key Benefits of BucketAuto vs Bucket:
+// 1. No need to know data distribution beforehand
+// 2. Automatic optimal boundary calculation
+// 3. Granularity options for nice round numbers
+// 4. Even distribution across buckets
+// 5. Handles edge cases automatically
