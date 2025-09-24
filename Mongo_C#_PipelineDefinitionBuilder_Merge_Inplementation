@@ -1,0 +1,79 @@
+Question : As a result you cannot use pure fluent api 
+
+public async Task MergeWithConditionsFluentAsync(string targetCollectionName)
+{
+    var pipeline = _collection.Aggregate()
+        .AddFields(new BsonDocument 
+        {
+            { "processedDate", DateTime.UtcNow },
+            { "priceCategory", new BsonDocument("$switch", new BsonDocument
+                {
+                    { "branches", new BsonArray
+                        {
+                            new BsonDocument
+                            {
+                                { "case", new BsonDocument("$lt", new BsonArray { "$price", 50 }) },
+                                { "then", "Budget" }
+                            },
+                            new BsonDocument
+                            {
+                                { "case", new BsonDocument("$lt", new BsonArray { "$price", 200 }) },
+                                { "then", "Mid-range" }
+                            }
+                        }
+                    },
+                    { "default", "Premium" }
+                })
+            }
+        })
+        .Merge(targetCollectionName, "_id", whenMatched: MergeStage.WhenMatched.Merge, whenNotMatched: MergeStage.WhenNotMatched.Insert);
+
+    await pipeline.ToListAsync();
+} like this ? 
+
+Answer:
+#######
+Yes, as a result, you cannot use a pure fluent API for your aggregation pipeline like this because the MongoDB C# driver currently does not provide a dedicated AddFields method on IAggregateFluent<T>.
+
+The best practice is to combine the fluent API with raw BsonDocument stages for operations not directly supported as fluent methods. For example, use .AppendStage<BsonDocument>() for $addFields and fluent .Merge() for $merge.
+
+So your example with .AddFields() will not compile because that method doesn't exist in the driver.
+
+Using a hybrid approach is the standard way:
+
+csharp
+public async Task MergeWithConditionsFluentAsync(string targetCollectionName)
+{
+    var addFieldsStage = new BsonDocument("$addFields", new BsonDocument
+    {
+        { "processedDate", DateTime.UtcNow },
+        { "priceCategory", new BsonDocument("$switch", new BsonDocument
+            {
+                { "branches", new BsonArray
+                    {
+                        new BsonDocument
+                        {
+                            { "case", new BsonDocument("$lt", new BsonArray { "$price", 50 }) },
+                            { "then", "Budget" }
+                        },
+                        new BsonDocument
+                        {
+                            { "case", new BsonDocument("$lt", new BsonArray { "$price", 200 }) },
+                            { "then", "Mid-range" }
+                        }
+                    }
+                },
+                { "default", "Premium" }
+            })
+        }
+    });
+
+    var pipeline = _collection.Aggregate()
+        .AppendStage<BsonDocument>(addFieldsStage)
+        .Merge(targetCollectionName, "_id", whenMatched: MergeStage.WhenMatched.Merge, whenNotMatched: MergeStage.WhenNotMatched.Insert);
+
+    await pipeline.ToListAsync();
+}
+This uses fluent .Merge() for the merge stage — which exists — and uses .AppendStage<BsonDocument>() for complex $addFields — which is the idiomatic and currently necessary pattern. This is common due to the current limitation of the C# driver fluent API.
+
+Therefore, pure fluent approach for this aggregation is not possible. Use this hybrid approach to have type safety and leverage fluent API where supported.
