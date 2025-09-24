@@ -1,0 +1,1050 @@
+Claude AI Mongo C# driver PipelineDefinitionBuilder RankFusion Implementation
+
+using MongoDB.Driver;
+using MongoDB.Bson;
+using Microsoft.Extensions.Options;
+using System.Text.RegularExpressions;
+
+public class ProductService : MongoDbRepository<Product>
+{
+    public ProductService(IOptions<DatabaseSettings> databaseSettings) : base(databaseSettings)
+    {
+    }
+
+    #region RankFusion Models
+
+    public class RankFusionRequest
+    {
+        public string? SearchTerm { get; set; }
+        public List<string>? Categories { get; set; }
+        public List<string>? Brands { get; set; }
+        public List<string>? Tags { get; set; }
+        public decimal? MinPrice { get; set; }
+        public decimal? MaxPrice { get; set; }
+        public double? MinRating { get; set; }
+        public bool? InStock { get; set; }
+        public RankFusionMethod FusionMethod { get; set; } = RankFusionMethod.ReciprocalRankFusion;
+        public List<RankingCriteria> RankingWeights { get; set; } = new();
+        public int Limit { get; set; } = 50;
+        public int Skip { get; set; } = 0;
+    }
+
+    public enum RankFusionMethod
+    {
+        ReciprocalRankFusion,    // RRF - Most common
+        BordaCount,              // Positional scoring
+        WeightedSum,             // Linear combination
+        CombSUM,                 // Sum of normalized scores
+        CombMNZ                  // Mean of non-zero scores
+    }
+
+    public enum RankingCriteria
+    {
+        TextRelevance,
+        PriceAscending,
+        PriceDescending,
+        Rating,
+        Popularity,
+        Recency,
+        Stock,
+        BrandRelevance
+    }
+
+    public class RankingCriteria
+    {
+        public RankingCriteria CriteriaType { get; set; }
+        public double Weight { get; set; } = 1.0;
+    }
+
+    public class RankedProduct
+    {
+        public Product Product { get; set; }
+        public double FinalScore { get; set; }
+        public Dictionary<RankingCriteria, double> IndividualScores { get; set; } = new();
+        public Dictionary<RankingCriteria, int> Rankings { get; set; } = new();
+    }
+
+    public class RankFusionResult
+    {
+        public List<RankedProduct> Products { get; set; } = new();
+        public long TotalCount { get; set; }
+        public RankFusionMethod UsedMethod { get; set; }
+        public Dictionary<string, object> Metadata { get; set; } = new();
+    }
+
+    #endregion
+
+    #region Main RankFusion Method
+
+    public async Task<RankFusionResult> RankFusionSearchAsync(RankFusionRequest request)
+    {
+        // Step 1: Get base filtered results
+        var baseFilter = BuildBaseFilter(request);
+        var candidateProducts = await _collection
+            .Find(baseFilter)
+            .Limit(request.Limit * 3) // Get more candidates for better fusion
+            .ToListAsync();
+
+        if (!candidateProducts.Any())
+        {
+            return new RankFusionResult { TotalCount = 0 };
+        }
+
+        // Step 2: Generate individual rankings for each criteria
+        var rankings = new Dictionary<RankingCriteria, List<RankedProduct>>();
+        
+        foreach (var criteria in GetActiveCriteria(request))
+        {
+            var ranking = await GenerateRankingAsync(candidateProducts, criteria, request);
+            rankings[criteria.CriteriaType] = ranking;
+        }
+
+        // Step 3: Apply fusion method
+        var fusedResults = ApplyRankFusion(rankings, request.FusionMethod, request.RankingWeights);
+
+        // Step 4: Apply pagination
+        var paginatedResults = fusedResults
+            .Skip(request.Skip)
+            .Take(request.Limit)
+            .ToList();
+
+        return new RankFusionResult
+        {
+            Products = paginatedResults,
+            TotalCount = fusedResults.Count,
+            UsedMethod = request.FusionMethod,
+            Metadata = new Dictionary<string, object>
+            {
+                ["criteriaUsed"] = rankings.Keys.ToList(),
+                ["candidatesEvaluated"] = candidateProducts.Count
+            }
+        };
+    }
+
+    #endregion
+
+    #region Individual Ranking Generators
+
+    private async Task<List<RankedProduct>> GenerateRankingAsync(
+        List<Product> products, 
+        RankingCriteria criteria, 
+        RankFusionRequest request)
+    {
+        return criteria.CriteriaType switch
+        {
+            RankingCriteria.TextRelevance => GenerateTextRelevanceRanking(products, request.SearchTerm),
+            RankingCriteria.PriceAscending => GeneratePriceRanking(products, ascending: true),
+            RankingCriteria.PriceDescending => GeneratePriceRanking(products, ascending: false),
+            RankingCriteria.Rating => GenerateRatingRanking(products),
+            RankingCriteria.Popularity => await GeneratePopularityRanking(products),
+            RankingCriteria.Recency => GenerateRecencyRanking(products),
+            RankingCriteria.Stock => GenerateStockRanking(products),
+            RankingCriteria.BrandRelevance => GenerateBrandRelevanceRanking(products, request.Brands),
+            _ => products.Select((p, i) => new RankedProduct 
+            { 
+                Product = p, 
+                FinalScore = 1.0 / (i + 1) 
+            }).ToList()
+        };
+    }
+
+    private List<RankedProduct> GenerateTextRelevanceRanking(List<Product> products, string? searchTerm)
+    {
+        if (string.IsNullOrWhiteSpace(searchTerm))
+        {
+            return products.Select(p => new RankedProduct { Product = p, FinalScore = 1.0 }).ToList();
+        }
+
+        var searchWords = searchTerm.ToLower().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        
+        return products
+            .Select(p => new RankedProduct
+            {
+                Product = p,
+                FinalScore = CalculateTextRelevanceScore(p, searchWords)
+            })
+            .OrderByDescending(r => r.FinalScore)
+            .ToList();
+    }
+
+    private double CalculateTextRelevanceScore(Product product, string[] searchWords)
+    {
+        double score = 0;
+        var productText = $"{product.Name} {product.Brand} {product.Category} {string.Join(" ", product.Tags)}".ToLower();
+
+        foreach (var word in searchWords)
+        {
+            // Exact match in name (highest weight)
+            if (product.Name.ToLower().Contains(word))
+                score += 10;
+                
+            // Exact match in brand
+            if (product.Brand.ToLower().Contains(word))
+                score += 8;
+                
+            // Exact match in category
+            if (product.Category.ToLower().Contains(word))
+                score += 6;
+                
+            // Match in tags
+            if (product.Tags.Any(tag => tag.ToLower().Contains(word)))
+                score += 4;
+                
+            // Fuzzy matching for partial words
+            if (productText.Contains(word))
+                score += 2;
+        }
+
+        return score;
+    }
+
+    private List<RankedProduct> GeneratePriceRanking(List<Product> products, bool ascending)
+    {
+        var ordered = ascending 
+            ? products.OrderBy(p => p.Price)
+            : products.OrderByDescending(p => p.Price);
+
+        return ordered
+            .Select((p, index) => new RankedProduct
+            {
+                Product = p,
+                FinalScore = 1.0 / (index + 1)
+            })
+            .ToList();
+    }
+
+    private List<RankedProduct> GenerateRatingRanking(List<Product> products)
+    {
+        return products
+            .OrderByDescending(p => p.Rating)
+            .Select((p, index) => new RankedProduct
+            {
+                Product = p,
+                FinalScore = p.Rating / 5.0 // Normalize to 0-1
+            })
+            .ToList();
+    }
+
+    private async Task<List<RankedProduct>> GeneratePopularityRanking(List<Product> products)
+    {
+        // This could be based on sales data, views, etc.
+        // For now, we'll use a combination of rating and stock as proxy
+        return products
+            .Select(p => new RankedProduct
+            {
+                Product = p,
+                FinalScore = (p.Rating / 5.0) * Math.Log(p.Stock + 1) // Log to prevent stock dominance
+            })
+            .OrderByDescending(r => r.FinalScore)
+            .ToList();
+    }
+
+    private List<RankedProduct> GenerateRecencyRanking(List<Product> products)
+    {
+        var now = DateTime.UtcNow;
+        var maxDays = products.Max(p => (now - p.CreatedDate).TotalDays);
+        
+        return products
+            .Select(p => new RankedProduct
+            {
+                Product = p,
+                FinalScore = 1.0 - ((now - p.CreatedDate).TotalDays / maxDays)
+            })
+            .OrderByDescending(r => r.FinalScore)
+            .ToList();
+    }
+
+    private List<RankedProduct> GenerateStockRanking(List<Product> products)
+    {
+        var maxStock = products.Max(p => p.Stock);
+        
+        return products
+            .Select(p => new RankedProduct
+            {
+                Product = p,
+                FinalScore = p.InStock ? (double)p.Stock / maxStock : 0
+            })
+            .OrderByDescending(r => r.FinalScore)
+            .ToList();
+    }
+
+    private List<RankedProduct> GenerateBrandRelevanceRanking(List<Product> products, List<string>? preferredBrands)
+    {
+        if (preferredBrands == null || !preferredBrands.Any())
+        {
+            return products.Select(p => new RankedProduct { Product = p, FinalScore = 1.0 }).ToList();
+        }
+
+        return products
+            .Select(p => new RankedProduct
+            {
+                Product = p,
+                FinalScore = preferredBrands.Contains(p.Brand, StringComparer.OrdinalIgnoreCase) ? 1.0 : 0.5
+            })
+            .OrderByDescending(r => r.FinalScore)
+            .ToList();
+    }
+
+    #endregion
+
+    #region Fusion Methods
+
+    private List<RankedProduct> ApplyRankFusion(
+        Dictionary<RankingCriteria, List<RankedProduct>> rankings,
+        RankFusionMethod method,
+        List<RankingCriteria> weights)
+    {
+        return method switch
+        {
+            RankFusionMethod.ReciprocalRankFusion => ApplyReciprocalRankFusion(rankings, weights),
+            RankFusionMethod.BordaCount => ApplyBordaCount(rankings, weights),
+            RankFusionMethod.WeightedSum => ApplyWeightedSum(rankings, weights),
+            RankFusionMethod.CombSUM => ApplyCombSUM(rankings, weights),
+            RankFusionMethod.CombMNZ => ApplyCombMNZ(rankings, weights),
+            _ => ApplyReciprocalRankFusion(rankings, weights)
+        };
+    }
+
+    private List<RankedProduct> ApplyReciprocalRankFusion(
+        Dictionary<RankingCriteria, List<RankedProduct>> rankings,
+        List<RankingCriteria> weights)
+    {
+        var productScores = new Dictionary<string, double>();
+        var productObjects = new Dictionary<string, Product>();
+        const int k = 60; // RRF constant
+
+        foreach (var (criteriaType, ranking) in rankings)
+        {
+            var weight = weights.FirstOrDefault(w => w.CriteriaType == criteriaType)?.Weight ?? 1.0;
+            
+            for (int i = 0; i < ranking.Count; i++)
+            {
+                var product = ranking[i].Product;
+                var productId = product.Id!;
+                var rrfScore = weight / (k + i + 1);
+
+                if (!productScores.ContainsKey(productId))
+                {
+                    productScores[productId] = 0;
+                    productObjects[productId] = product;
+                }
+
+                productScores[productId] += rrfScore;
+            }
+        }
+
+        return productScores
+            .OrderByDescending(kv => kv.Value)
+            .Select(kv => new RankedProduct
+            {
+                Product = productObjects[kv.Key],
+                FinalScore = kv.Value
+            })
+            .ToList();
+    }
+
+    private List<RankedProduct> ApplyBordaCount(
+        Dictionary<RankingCriteria, List<RankedProduct>> rankings,
+        List<RankingCriteria> weights)
+    {
+        var productScores = new Dictionary<string, double>();
+        var productObjects = new Dictionary<string, Product>();
+
+        foreach (var (criteriaType, ranking) in rankings)
+        {
+            var weight = weights.FirstOrDefault(w => w.CriteriaType == criteriaType)?.Weight ?? 1.0;
+            var maxRank = ranking.Count;
+
+            for (int i = 0; i < ranking.Count; i++)
+            {
+                var product = ranking[i].Product;
+                var productId = product.Id!;
+                var bordaScore = weight * (maxRank - i);
+
+                if (!productScores.ContainsKey(productId))
+                {
+                    productScores[productId] = 0;
+                    productObjects[productId] = product;
+                }
+
+                productScores[productId] += bordaScore;
+            }
+        }
+
+        return productScores
+            .OrderByDescending(kv => kv.Value)
+            .Select(kv => new RankedProduct
+            {
+                Product = productObjects[kv.Key],
+                FinalScore = kv.Value
+            })
+            .ToList();
+    }
+
+    private List<RankedProduct> ApplyWeightedSum(
+        Dictionary<RankingCriteria, List<RankedProduct>> rankings,
+        List<RankingCriteria> weights)
+    {
+        var productScores = new Dictionary<string, double>();
+        var productObjects = new Dictionary<string, Product>();
+
+        foreach (var (criteriaType, ranking) in rankings)
+        {
+            var weight = weights.FirstOrDefault(w => w.CriteriaType == criteriaType)?.Weight ?? 1.0;
+
+            foreach (var rankedProduct in ranking)
+            {
+                var productId = rankedProduct.Product.Id!;
+                var weightedScore = weight * rankedProduct.FinalScore;
+
+                if (!productScores.ContainsKey(productId))
+                {
+                    productScores[productId] = 0;
+                    productObjects[productId] = rankedProduct.Product;
+                }
+
+                productScores[productId] += weightedScore;
+            }
+        }
+
+        return productScores
+            .OrderByDescending(kv => kv.Value)
+            .Select(kv => new RankedProduct
+            {
+                Product = productObjects[kv.Key],
+                FinalScore = kv.Value
+            })
+            .ToList();
+    }
+
+    private List<RankedProduct> ApplyCombSUM(
+        Dictionary<RankingCriteria, List<RankedProduct>> rankings,
+        List<RankingCriteria> weights)
+    {
+        // Normalize scores first, then sum
+        var normalizedRankings = new Dictionary<RankingCriteria, List<RankedProduct>>();
+        
+        foreach (var (criteriaType, ranking) in rankings)
+        {
+            var maxScore = ranking.Max(r => r.FinalScore);
+            var minScore = ranking.Min(r => r.FinalScore);
+            var range = maxScore - minScore;
+
+            normalizedRankings[criteriaType] = ranking
+                .Select(r => new RankedProduct
+                {
+                    Product = r.Product,
+                    FinalScore = range > 0 ? (r.FinalScore - minScore) / range : 1.0
+                })
+                .ToList();
+        }
+
+        return ApplyWeightedSum(normalizedRankings, weights);
+    }
+
+    private List<RankedProduct> ApplyCombMNZ(
+        Dictionary<RankingCriteria, List<RankedProduct>> rankings,
+        List<RankingCriteria> weights)
+    {
+        var combSumResults = ApplyCombSUM(rankings, weights);
+        var productCounts = new Dictionary<string, int>();
+
+        // Count how many rankings each product appears in
+        foreach (var ranking in rankings.Values)
+        {
+            foreach (var rankedProduct in ranking)
+            {
+                var productId = rankedProduct.Product.Id!;
+                productCounts[productId] = productCounts.GetValueOrDefault(productId, 0) + 1;
+            }
+        }
+
+        // Multiply CombSUM score by count of non-zero rankings
+        return combSumResults
+            .Select(r => new RankedProduct
+            {
+                Product = r.Product,
+                FinalScore = r.FinalScore * productCounts.GetValueOrDefault(r.Product.Id!, 1)
+            })
+            .OrderByDescending(r => r.FinalScore)
+            .ToList();
+    }
+
+    #endregion
+
+    #region Helper Methods
+
+    private FilterDefinition<Product> BuildBaseFilter(RankFusionRequest request)
+    {
+        var filters = new List<FilterDefinition<Product>>();
+
+        if (request.Categories?.Any() == true)
+            filters.Add(Builders<Product>.Filter.In(p => p.Category, request.Categories));
+
+        if (request.Brands?.Any() == true)
+            filters.Add(Builders<Product>.Filter.In(p => p.Brand, request.Brands));
+
+        if (request.Tags?.Any() == true)
+            filters.Add(Builders<Product>.Filter.AnyIn(p => p.Tags, request.Tags));
+
+        if (request.MinPrice.HasValue)
+            filters.Add(Builders<Product>.Filter.Gte(p => p.Price, request.MinPrice.Value));
+
+        if (request.MaxPrice.HasValue)
+            filters.Add(Builders<Product>.Filter.Lte(p => p.Price, request.MaxPrice.Value));
+
+        if (request.MinRating.HasValue)
+            filters.Add(Builders<Product>.Filter.Gte(p => p.Rating, request.MinRating.Value));
+
+        if (request.InStock.HasValue)
+            filters.Add(Builders<Product>.Filter.Eq(p => p.InStock, request.InStock.Value));
+
+        return filters.Any() 
+            ? Builders<Product>.Filter.And(filters)
+            : Builders<Product>.Filter.Empty;
+    }
+
+    private List<RankingCriteria> GetActiveCriteria(RankFusionRequest request)
+    {
+        if (request.RankingWeights?.Any() == true)
+            return request.RankingWeights;
+
+        // Default criteria based on request
+        var criteria = new List<RankingCriteria>();
+
+        if (!string.IsNullOrWhiteSpace(request.SearchTerm))
+            criteria.Add(new RankingCriteria { CriteriaType = RankingCriteria.TextRelevance, Weight = 2.0 });
+
+        criteria.AddRange(new[]
+        {
+            new RankingCriteria { CriteriaType = RankingCriteria.Rating, Weight = 1.5 },
+            new RankingCriteria { CriteriaType = RankingCriteria.Popularity, Weight = 1.0 },
+            new RankingCriteria { CriteriaType = RankingCriteria.Stock, Weight = 0.8 }
+        });
+
+        if (request.Brands?.Any() == true)
+            criteria.Add(new RankingCriteria { CriteriaType = RankingCriteria.BrandRelevance, Weight = 1.2 });
+
+        return criteria;
+    }
+
+    #endregion
+
+    #region MongoDB Aggregation-Based RankFusion (Advanced)
+
+    public async Task<RankFusionResult> RankFusionAggregationAsync(RankFusionRequest request)
+    {
+        var pipeline = new List<BsonDocument>();
+
+        // Base match stage
+        var matchStage = BuildAggregationMatchStage(request);
+        if (matchStage != null)
+            pipeline.Add(matchStage);
+
+        // Add computed ranking scores
+        pipeline.Add(new BsonDocument("$addFields", new BsonDocument
+        {
+            ["textScore"] = BuildTextScoreExpression(request.SearchTerm),
+            ["priceScore"] = new BsonDocument("$divide", new BsonArray { 1, "$price" }),
+            ["ratingScore"] = new BsonDocument("$divide", new BsonArray { "$rating", 5 }),
+            ["stockScore"] = new BsonDocument("$cond", new BsonDocument
+            {
+                ["if"] = "$instock",
+                ["then"] = new BsonDocument("$divide", new BsonArray { "$stock", 1000 }),
+                ["else"] = 0
+            }),
+            ["recencyScore"] = new BsonDocument("$divide", new BsonArray
+            {
+                1,
+                new BsonDocument("$add", new BsonArray
+                {
+                    1,
+                    new BsonDocument("$divide", new BsonArray
+                    {
+                        new BsonDocument("$subtract", new BsonArray { "$$NOW", "$createddate" }),
+                        86400000 // milliseconds in a day
+                    })
+                })
+            })
+        }));
+
+        // Calculate final fusion score based on method
+        pipeline.Add(new BsonDocument("$addFields", new BsonDocument
+        {
+            ["fusionScore"] = BuildFusionScoreExpression(request.FusionMethod, request.RankingWeights)
+        }));
+
+        // Sort by fusion score
+        pipeline.Add(new BsonDocument("$sort", new BsonDocument("fusionScore", -1)));
+
+        // Add pagination
+        if (request.Skip > 0)
+            pipeline.Add(new BsonDocument("$skip", request.Skip));
+
+        pipeline.Add(new BsonDocument("$limit", request.Limit));
+
+        // Execute aggregation
+        var results = await _collection.AggregateAsync<BsonDocument>(pipeline);
+        var documents = await results.ToListAsync();
+
+        // Convert to RankedProduct objects
+        var rankedProducts = documents.Select(doc => new RankedProduct
+        {
+            Product = BsonSerializer.Deserialize<Product>(doc),
+            FinalScore = doc.GetValue("fusionScore", 0.0).ToDouble()
+        }).ToList();
+
+        return new RankFusionResult
+        {
+            Products = rankedProducts,
+            TotalCount = rankedProducts.Count,
+            UsedMethod = request.FusionMethod,
+            Metadata = new Dictionary<string, object>
+            {
+                ["aggregationUsed"] = true,
+                ["pipelineStages"] = pipeline.Count
+            }
+        };
+    }
+
+    private BsonDocument? BuildAggregationMatchStage(RankFusionRequest request)
+    {
+        var conditions = new List<BsonDocument>();
+
+        if (request.Categories?.Any() == true)
+            conditions.Add(new BsonDocument("category", new BsonDocument("$in", new BsonArray(request.Categories))));
+
+        if (request.Brands?.Any() == true)
+            conditions.Add(new BsonDocument("brand", new BsonDocument("$in", new BsonArray(request.Brands))));
+
+        if (request.MinPrice.HasValue)
+            conditions.Add(new BsonDocument("price", new BsonDocument("$gte", request.MinPrice.Value)));
+
+        if (request.MaxPrice.HasValue)
+            conditions.Add(new BsonDocument("price", new BsonDocument("$lte", request.MaxPrice.Value)));
+
+        if (request.MinRating.HasValue)
+            conditions.Add(new BsonDocument("rating", new BsonDocument("$gte", request.MinRating.Value)));
+
+        if (request.InStock.HasValue)
+            conditions.Add(new BsonDocument("instock", request.InStock.Value));
+
+        if (!string.IsNullOrWhiteSpace(request.SearchTerm))
+        {
+            conditions.Add(new BsonDocument("$or", new BsonArray
+            {
+                new BsonDocument("name", new BsonDocument("$regex", new BsonRegularExpression(request.SearchTerm, "i"))),
+                new BsonDocument("brand", new BsonDocument("$regex", new BsonRegularExpression(request.SearchTerm, "i"))),
+                new BsonDocument("category", new BsonDocument("$regex", new BsonRegularExpression(request.SearchTerm, "i"))),
+                new BsonDocument("tags", new BsonDocument("$regex", new BsonRegularExpression(request.SearchTerm, "i")))
+            }));
+        }
+
+        return conditions.Any() 
+            ? new BsonDocument("$match", conditions.Count == 1 ? conditions[0] : new BsonDocument("$and", new BsonArray(conditions)))
+            : null;
+    }
+
+    private BsonValue BuildTextScoreExpression(string? searchTerm)
+    {
+        if (string.IsNullOrWhiteSpace(searchTerm))
+            return new BsonInt32(1);
+
+        return new BsonDocument("$add", new BsonArray
+        {
+            new BsonDocument("$cond", new BsonDocument
+            {
+                ["if"] = new BsonDocument("$regexMatch", new BsonDocument
+                {
+                    ["input"] = "$name",
+                    ["regex"] = searchTerm,
+                    ["options"] = "i"
+                }),
+                ["then"] = 10,
+                ["else"] = 0
+            }),
+            new BsonDocument("$cond", new BsonDocument
+            {
+                ["if"] = new BsonDocument("$regexMatch", new BsonDocument
+                {
+                    ["input"] = "$brand",
+                    ["regex"] = searchTerm,
+                    ["options"] = "i"
+                }),
+                ["then"] = 8,
+                ["else"] = 0
+            }),
+            new BsonDocument("$cond", new BsonDocument
+            {
+                ["if"] = new BsonDocument("$regexMatch", new BsonDocument
+                {
+                    ["input"] = "$category",
+                    ["regex"] = searchTerm,
+                    ["options"] = "i"
+                }),
+                ["then"] = 6,
+                ["else"] = 0
+            })
+        });
+    }
+
+    private BsonValue BuildFusionScoreExpression(RankFusionMethod method, List<RankingCriteria> weights)
+    {
+        var weightMap = weights?.ToDictionary(w => w.CriteriaType, w => w.Weight) ?? new Dictionary<RankingCriteria, double>();
+        
+        var textWeight = weightMap.GetValueOrDefault(RankingCriteria.TextRelevance, 1.0);
+        var ratingWeight = weightMap.GetValueOrDefault(RankingCriteria.Rating, 1.0);
+        var stockWeight = weightMap.GetValueOrDefault(RankingCriteria.Stock, 1.0);
+        var recencyWeight = weightMap.GetValueOrDefault(RankingCriteria.Recency, 1.0);
+
+        return method switch
+        {
+            RankFusionMethod.WeightedSum => new BsonDocument("$add", new BsonArray
+            {
+                new BsonDocument("$multiply", new BsonArray { "$textScore", textWeight }),
+                new BsonDocument("$multiply", new BsonArray { "$ratingScore", ratingWeight }),
+                new BsonDocument("$multiply", new BsonArray { "$stockScore", stockWeight }),
+                new BsonDocument("$multiply", new BsonArray { "$recencyScore", recencyWeight })
+            }),
+            _ => new BsonDocument("$add", new BsonArray
+            {
+                new BsonDocument("$divide", new BsonArray { textWeight, new BsonDocument("$add", new BsonArray { 60, 1 }) }),
+                new BsonDocument("$divide", new BsonArray { ratingWeight, new BsonDocument("$add", new BsonArray { 60, 2 }) }),
+                new BsonDocument("$divide", new BsonArray { stockWeight, new BsonDocument("$add", new BsonArray { 60, 3 }) }),
+                new BsonDocument("$divide", new BsonArray { recencyWeight, new BsonDocument("$add", new BsonArray { 60, 4 }) })
+            })
+        };
+    }
+
+    #endregion
+
+    #region Bulk RankFusion Operations
+
+    /// <summary>
+    /// Performs rank fusion on multiple search queries simultaneously
+    /// </summary>
+    public async Task<Dictionary<string, RankFusionResult>> BatchRankFusionAsync(
+        Dictionary<string, RankFusionRequest> requests)
+    {
+        var results = new Dictionary<string, RankFusionResult>();
+        var tasks = requests.Select(async kvp => 
+        {
+            var result = await RankFusionSearchAsync(kvp.Value);
+            return new { Key = kvp.Key, Result = result };
+        });
+
+        var completedTasks = await Task.WhenAll(tasks);
+        
+        foreach (var task in completedTasks)
+        {
+            results[task.Key] = task.Result;
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Updates product rankings based on user interactions
+    /// </summary>
+    public async Task<bool> UpdateProductRankingAsync(string productId, UserInteraction interaction)
+    {
+        var update = Builders<Product>.Update;
+        UpdateDefinition<Product> updateDef;
+
+        switch (interaction.Type)
+        {
+            case InteractionType.View:
+                updateDef = update.Inc("viewCount", 1);
+                break;
+            case InteractionType.Purchase:
+                updateDef = update.Combine(
+                    update.Inc("purchaseCount", 1),
+                    update.Inc("popularityScore", 5)
+                );
+                break;
+            case InteractionType.AddToCart:
+                updateDef = update.Inc("addToCartCount", 1);
+                break;
+            case InteractionType.Rating:
+                // Recalculate average rating
+                var product = await GetAsync(productId);
+                if (product != null)
+                {
+                    var newRating = CalculateNewRating(product.Rating, interaction.Rating);
+                    updateDef = update.Set("rating", newRating);
+                }
+                else
+                {
+                    return false;
+                }
+                break;
+            default:
+                return false;
+        }
+
+        var result = await _collection.UpdateOneAsync(
+            Builders<Product>.Filter.Eq(p => p.Id, productId),
+            updateDef
+        );
+
+        return result.ModifiedCount > 0;
+    }
+
+    private double CalculateNewRating(double currentRating, double newRating)
+    {
+        // Simple weighted average - in production, you'd want to track rating count
+        return (currentRating + newRating) / 2.0;
+    }
+
+    #endregion
+
+    #region Analytics and Insights
+
+    /// <summary>
+    /// Analyzes ranking performance and provides insights
+    /// </summary>
+    public async Task<RankingAnalytics> AnalyzeRankingPerformanceAsync(
+        List<RankFusionRequest> testRequests, 
+        TimeSpan? timeWindow = null)
+    {
+        var analytics = new RankingAnalytics();
+        var window = timeWindow ?? TimeSpan.FromDays(30);
+
+        foreach (var request in testRequests)
+        {
+            var results = new Dictionary<RankFusionMethod, RankFusionResult>();
+            
+            // Test all fusion methods
+            foreach (RankFusionMethod method in Enum.GetValues<RankFusionMethod>())
+            {
+                var testRequest = new RankFusionRequest
+                {
+                    SearchTerm = request.SearchTerm,
+                    Categories = request.Categories,
+                    Brands = request.Brands,
+                    FusionMethod = method,
+                    RankingWeights = request.RankingWeights,
+                    Limit = request.Limit
+                };
+
+                results[method] = await RankFusionSearchAsync(testRequest);
+            }
+
+            analytics.MethodComparisons.Add(new MethodComparison
+            {
+                Request = request,
+                Results = results
+            });
+        }
+
+        return analytics;
+    }
+
+    /// <summary>
+    /// Gets trending products based on recent interactions
+    /// </summary>
+    public async Task<List<RankedProduct>> GetTrendingProductsAsync(
+        int limit = 20, 
+        TimeSpan? timeWindow = null)
+    {
+        var window = timeWindow ?? TimeSpan.FromHours(24);
+        var since = DateTime.UtcNow - window;
+
+        var pipeline = new List<BsonDocument>
+        {
+            new("$match", new BsonDocument
+            {
+                ["updateddate"] = new BsonDocument("$gte", since),
+                ["instock"] = true
+            }),
+            new("$addFields", new BsonDocument
+            {
+                ["trendingScore"] = new BsonDocument("$add", new BsonArray
+                {
+                    new BsonDocument("$multiply", new BsonArray { "$rating", 2 }),
+                    new BsonDocument("$divide", new BsonArray { "$stock", 100 }),
+                    new BsonDocument("$cond", new BsonDocument
+                    {
+                        ["if"] = new BsonDocument("$gt", new BsonArray { "$updateddate", since }),
+                        ["then"] = 5,
+                        ["else"] = 0
+                    })
+                })
+            }),
+            new("$sort", new BsonDocument("trendingScore", -1)),
+            new("$limit", limit)
+        };
+
+        var results = await _collection.AggregateAsync<BsonDocument>(pipeline);
+        var documents = await results.ToListAsync();
+
+        return documents.Select(doc => new RankedProduct
+        {
+            Product = BsonSerializer.Deserialize<Product>(doc),
+            FinalScore = doc.GetValue("trendingScore", 0.0).ToDouble()
+        }).ToList();
+    }
+
+    /// <summary>
+    /// Gets personalized recommendations based on user preferences
+    /// </summary>
+    public async Task<List<RankedProduct>> GetPersonalizedRecommendationsAsync(
+        UserPreferences preferences, 
+        int limit = 20)
+    {
+        var request = new RankFusionRequest
+        {
+            Categories = preferences.PreferredCategories,
+            Brands = preferences.PreferredBrands,
+            MinPrice = preferences.MinPrice,
+            MaxPrice = preferences.MaxPrice,
+            MinRating = preferences.MinRating,
+            InStock = true,
+            FusionMethod = RankFusionMethod.ReciprocalRankFusion,
+            RankingWeights = new List<RankingCriteria>
+            {
+                new() { CriteriaType = RankingCriteria.BrandRelevance, Weight = 2.0 },
+                new() { CriteriaType = RankingCriteria.Rating, Weight = 1.5 },
+                new() { CriteriaType = RankingCriteria.Popularity, Weight = 1.2 },
+                new() { CriteriaType = RankingCriteria.PriceAscending, Weight = preferences.PriceSensitivity }
+            },
+            Limit = limit
+        };
+
+        // Exclude already purchased items
+        var baseFilter = BuildBaseFilter(request);
+        if (preferences.ExcludedProductIds?.Any() == true)
+        {
+            var excludeFilter = Builders<Product>.Filter.Nin(p => p.Id, preferences.ExcludedProductIds);
+            baseFilter = Builders<Product>.Filter.And(baseFilter, excludeFilter);
+        }
+
+        var result = await RankFusionSearchAsync(request);
+        return result.Products;
+    }
+
+    #endregion
+
+    #region Supporting Models
+
+    public class UserInteraction
+    {
+        public InteractionType Type { get; set; }
+        public double Rating { get; set; }
+        public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+        public string? UserId { get; set; }
+        public Dictionary<string, object> Metadata { get; set; } = new();
+    }
+
+    public enum InteractionType
+    {
+        View,
+        Purchase,
+        AddToCart,
+        Rating,
+        Favorite,
+        Share
+    }
+
+    public class UserPreferences
+    {
+        public List<string>? PreferredCategories { get; set; }
+        public List<string>? PreferredBrands { get; set; }
+        public decimal? MinPrice { get; set; }
+        public decimal? MaxPrice { get; set; }
+        public double? MinRating { get; set; }
+        public double PriceSensitivity { get; set; } = 1.0;
+        public List<string>? ExcludedProductIds { get; set; }
+    }
+
+    public class RankingAnalytics
+    {
+        public List<MethodComparison> MethodComparisons { get; set; } = new();
+        public Dictionary<RankFusionMethod, double> AveragePerformance { get; set; } = new();
+        public Dictionary<RankingCriteria, double> CriteriaEffectiveness { get; set; } = new();
+        public DateTime GeneratedAt { get; set; } = DateTime.UtcNow;
+    }
+
+    public class MethodComparison
+    {
+        public RankFusionRequest Request { get; set; }
+        public Dictionary<RankFusionMethod, RankFusionResult> Results { get; set; } = new();
+        public Dictionary<RankFusionMethod, double> PerformanceScores { get; set; } = new();
+    }
+
+    #endregion
+
+    #region Export and Import
+
+    /// <summary>
+    /// Exports ranking results to different formats
+    /// </summary>
+    public async Task<string> ExportRankingResultsAsync(
+        RankFusionResult result, 
+        ExportFormat format = ExportFormat.Json)
+    {
+        return format switch
+        {
+            ExportFormat.Json => System.Text.Json.JsonSerializer.Serialize(result, new JsonSerializerOptions 
+            { 
+                WriteIndented = true 
+            }),
+            ExportFormat.Csv => ConvertToCsv(result),
+            ExportFormat.Xml => ConvertToXml(result),
+            _ => throw new ArgumentException($"Unsupported export format: {format}")
+        };
+    }
+
+    private string ConvertToCsv(RankFusionResult result)
+    {
+        var csv = new StringBuilder();
+        csv.AppendLine("Id,Name,Brand,Category,Price,Rating,Stock,FinalScore");
+        
+        foreach (var item in result.Products)
+        {
+            var p = item.Product;
+            csv.AppendLine($"{p.Id},{p.Name},{p.Brand},{p.Category},{p.Price},{p.Rating},{p.Stock},{item.FinalScore:F4}");
+        }
+        
+        return csv.ToString();
+    }
+
+    private string ConvertToXml(RankFusionResult result)
+    {
+        var xml = new StringBuilder();
+        xml.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+        xml.AppendLine("<RankFusionResult>");
+        xml.AppendLine($"  <Method>{result.UsedMethod}</Method>");
+        xml.AppendLine($"  <TotalCount>{result.TotalCount}</TotalCount>");
+        xml.AppendLine("  <Products>");
+        
+        foreach (var item in result.Products)
+        {
+            var p = item.Product;
+            xml.AppendLine("    <Product>");
+            xml.AppendLine($"      <Id>{p.Id}</Id>");
+            xml.AppendLine($"      <Name><![CDATA[{p.Name}]]></Name>");
+            xml.AppendLine($"      <Brand><![CDATA[{p.Brand}]]></Brand>");
+            xml.AppendLine($"      <Category>{p.Category}</Category>");
+            xml.AppendLine($"      <Price>{p.Price}</Price>");
+            xml.AppendLine($"      <Rating>{p.Rating}</Rating>");
+            xml.AppendLine($"      <Stock>{p.Stock}</Stock>");
+            xml.AppendLine($"      <FinalScore>{item.FinalScore:F4}</FinalScore>");
+            xml.AppendLine("    </Product>");
+        }
+        
+        xml.AppendLine("  </Products>");
+        xml.AppendLine("</RankFusionResult>");
+        
+        return xml.ToString();
+    }
+
+    public enum ExportFormat
+    {
+        Json,
+        Csv,
+        Xml
+    }
+
+    #endregion
+}
