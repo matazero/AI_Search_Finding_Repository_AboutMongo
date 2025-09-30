@@ -1,0 +1,264 @@
+When to Use Mongo PipelineDefiniton Builder ReplaceRoot:
+
+Unwrapping nested data: When aggregation creates nested structures you want to flatten
+Simplifying responses: Remove wrapper fields and return just the core data
+Reshaping documents: Transform your document structure without changing the database
+Computed field promotion: Move calculated fields to the top level
+
+Each example includes the corresponding controller endpoint, so you can directly integrate them into your API!
+
+Code is Below . Written By Claude Sonnet
+----------------------------------------
+    // ===== SERVICE LAYER METHODS =====  
+    // ReplaceRoot method examples
+
+    // Example 1: Get only the first descendant as root document
+    // Useful when you want to "unwrap" nested category hierarchies
+    // This method used traditional bson document approach instead of strongly typed fluent API gives errors.
+    public async Task<List<Category>> GetFirstDescendantsOnlyAsync()
+    {
+        var pipeline = new BsonDocument[]
+        {
+          new BsonDocument("$graphLookup", new BsonDocument
+          {
+              { "from", _collection.CollectionNamespace.CollectionName },
+              { "startWith", "$_id" },
+              { "connectFromField", "_id" },
+              { "connectToField", "ParentId" },
+              { "as", "Descendants" },
+              { "depthField", "Level" }
+          }),
+          new BsonDocument("$match", new BsonDocument
+          {
+            { "Descendants", new BsonDocument("$ne", new BsonArray()) }
+          }),
+          new BsonDocument("$replaceRoot", new BsonDocument
+          {
+              { "newRoot", new BsonDocument("$arrayElemAt", new BsonArray { "$Descendants", 0 }) }
+          })
+        };
+
+        var result = await _collection.Aggregate<Category>(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Example 2: Create a flattened category structure
+    // Replace root with a computed document containing selected fields
+    public async Task<List<BsonDocument>> GetFlattenedCategoriesAsync()
+    {
+        var addFieldsStage = new BsonDocument
+        {
+            { "$addFields", new BsonDocument
+                {
+                    { "categoryInfo", new BsonDocument
+                        {
+                            { "id", "$_id" },
+                            { "name", "$Name" },
+                            { "parent", "$ParentId" }
+                        }
+                    }
+                }
+            }
+        };
+
+        var replaceRootStage = new BsonDocument
+        {
+            { "$replaceRoot", new BsonDocument
+                {
+                    { "newRoot", "$categoryInfo" }
+                }
+            }
+        };
+
+        var pipeline = new[] { addFieldsStage, replaceRootStage };
+
+        var result = await _collection.Aggregate<BsonDocument>(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Same with example 2 but using PipelineDefinitionBuilder for better readability
+
+    public async Task<List<BsonDocument>> GetFlattenedCategoriesAsyncWithPipelineDefinitionBuilder()
+    {
+        var pipeline = PipelineDefinition<Category, BsonDocument>.Create(
+            new BsonDocument[]
+            {
+               new BsonDocument
+               {
+                   { "$addFields", new BsonDocument
+                       {
+                           { "categoryInfo", new BsonDocument
+                               {
+                                   { "id", "$_id" },
+                                   { "name", "$Name" },
+                                   { "parent", "$ParentId" }
+                               }
+                           }
+                       }
+                   }
+               },
+               new BsonDocument
+               {
+                   { "$replaceRoot", new BsonDocument
+                       {
+                           { "newRoot", "$categoryInfo" }
+                       }
+                   }
+               }
+            }
+        );
+
+        var result = await _collection.Aggregate(pipeline).ToListAsync();
+        return result;
+    }
+
+    // Example 3: Get categories with their parent information as root
+    // Lookup parent and replace root with merged document
+
+    public async Task<List<BsonDocument>> GetCategoriesWithParentAsRootAsync()
+    {
+        var pipeline = new[]
+        {
+             new BsonDocument("$lookup", new BsonDocument
+             {
+                 { "from", _collection.CollectionNamespace.CollectionName },
+                 { "localField", "ParentId" },
+                 { "foreignField", "_id" },
+                 { "as", "parentInfo" }
+             }),
+             new BsonDocument("$replaceRoot", new BsonDocument
+             {
+                 { "newRoot", new BsonDocument
+                     {
+                         { "$mergeObjects", new BsonArray
+                             {
+                                 new BsonDocument
+                                 {
+                                     { "childId", "$_id" },
+                                     { "childName", "$Name" }
+                                 },
+                                 new BsonDocument
+                                 {
+                                     { "$arrayElemAt", new BsonArray { "$parentInfo", 0 } }
+                                 }
+                             }
+                         }
+                     }
+                 }
+             })
+        };
+
+        var result = await _collection.Aggregate<BsonDocument>(pipeline).ToListAsync();
+        return result;
+    }
+
+    public async Task<List<Stats>> GetCategoryStatisticsOnlyAsync()
+    {
+        var pipeline = new BsonDocument[]
+        {
+            new BsonDocument("$graphLookup", new BsonDocument
+            {
+                { "from", _collection.CollectionNamespace.CollectionName },
+                { "startWith", "$_id" },
+                { "connectFromField", "Id" },
+                { "connectToField", "ParentId" },
+                { "as", "Descendants" },
+                { "depthField", "Level" }
+            }),
+            new BsonDocument("$project", new BsonDocument
+            {
+                { "categoryId", "$_id" },
+                { "categoryName", "$Name" },
+                { "stats", new BsonDocument
+                    {
+                        { "descendantCount", new BsonDocument
+                            {
+                                { "$size", new BsonDocument
+                                    {
+                                        { "$ifNull", new BsonArray { "$Descendants", new BsonArray() } }
+                                    }
+                                }
+                            }
+                        },
+                        { "level", new BsonDocument
+                            {
+                                { "$ifNull", new BsonArray { "$Level", 0 } }
+                            }
+                        }
+                    }
+                }
+            }),
+            new BsonDocument("$replaceRoot", new BsonDocument
+            {
+                { "newRoot", "$stats" }
+            })
+        };
+
+        var result = await _collection.Aggregate<Stats>(pipeline).ToListAsync();
+        return result;
+    }
+
+    public async Task<List<BsonDocument>> GetConditionalCategoryViewAsync()
+    {
+        var pipeline = new[]
+        {
+            new BsonDocument("$graphLookup", new BsonDocument
+            {
+                 { "from", "categories" }, // Replace with your actual collection name
+                 { "startWith", "$_id" },
+                 { "connectFromField", "_id" },
+                 { "connectToField", "ParentId" },
+                 { "as", "Descendants" },
+                 { "depthField", "Level" }
+            }),
+            new BsonDocument("$replaceRoot", new BsonDocument
+            {
+                { "newRoot", new BsonDocument
+                    {
+                        { "$cond", new BsonDocument
+                            {
+                                { "if", new BsonDocument
+                                    {
+                                        { "$gt", new BsonArray
+                                            {
+                                                new BsonDocument
+                                                {
+                                                    { "$size", new BsonDocument
+                                                        {
+                                                            { "$ifNull", new BsonArray { "$Descendants", new BsonArray() } }
+                                                        }
+                                                    }
+                                                },
+                                                0
+                                            }
+                                        }
+                                    }
+                                },
+                                { "then", new BsonDocument
+                                    {
+                                        { "type", "parent" },
+                                        { "name", "$Name" },
+                                        { "childCount", new BsonDocument
+                                            {
+                                                { "$size", "$Descendants" }
+                                            }
+                                        }
+                                    }
+                                },
+                                { "else", new BsonDocument
+                                    {
+                                        { "type", "leaf" },
+                                        { "name", "$Name" },
+                                        { "hasChildren", false }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+};
+
+        var result = await _collection.Aggregate<BsonDocument>(pipeline).ToListAsync();
+        return result;
+    }
