@@ -1,0 +1,226 @@
+MongoDB Atlas Search Setup Guide
+Prerequisites
+
+MongoDB Atlas cluster (M10 or higher recommended for production)
+MongoDB.Driver NuGet package (version 2.19.0 or higher)
+
+Step 1: Create Search Indexes in Atlas
+Method 1: Using Atlas UI
+
+Log in to MongoDB Atlas
+Navigate to your cluster
+Click on "Search" tab
+Click "Create Search Index"
+Choose "JSON Editor"
+Use the index definitions below
+
+Method 2: Using MongoDB Shell
+javascript// Connect to your Atlas cluster
+mongosh "mongodb+srv://your-cluster.mongodb.net/yourdb"
+
+// Create the main search index
+db.categories.createSearchIndex(
+  "default",
+  {
+    "mappings": {
+      "dynamic": false,
+      "fields": {
+        "Name": {
+          "type": "string",
+          "analyzer": "lucene.standard"
+        },
+        "Description": {
+          "type": "string",
+          "analyzer": "lucene.standard"
+        }
+      }
+    }
+  }
+)
+
+// Create autocomplete index
+db.categories.createSearchIndex(
+  "autocomplete",
+  {
+    "mappings": {
+      "dynamic": false,
+      "fields": {
+        "Name": {
+          "type": "autocomplete",
+          "analyzer": "lucene.standard",
+          "tokenization": "edgeGram",
+          "minGrams": 2,
+          "maxGrams": 15,
+          "foldDiacritics": true
+        }
+      }
+    }
+  }
+)
+Step 2: Atlas Search Index Definitions (JSON)
+Default Search Index
+json{
+  "mappings": {
+    "dynamic": false,
+    "fields": {
+      "Name": {
+        "type": "string",
+        "analyzer": "lucene.standard"
+      },
+      "Description": {
+        "type": "string",
+        "analyzer": "lucene.standard"
+      }
+    }
+  }
+}
+Autocomplete Index
+json{
+  "mappings": {
+    "dynamic": false,
+    "fields": {
+      "Name": {
+        "type": "autocomplete",
+        "analyzer": "lucene.standard",
+        "tokenization": "edgeGram",
+        "minGrams": 2,
+        "maxGrams": 15,
+        "foldDiacritics": true
+      }
+    }
+  }
+}
+Advanced Index with All Features
+json{
+  "mappings": {
+    "dynamic": false,
+    "fields": {
+      "Name": [
+        {
+          "type": "string",
+          "analyzer": "lucene.standard"
+        },
+        {
+          "type": "autocomplete",
+          "analyzer": "lucene.standard",
+          "tokenization": "edgeGram",
+          "minGrams": 2,
+          "maxGrams": 15
+        }
+      ],
+      "Description": {
+        "type": "string",
+        "analyzer": "lucene.standard"
+      },
+      "ParentId": {
+        "type": "string"
+      }
+    }
+  },
+  "storedSource": {
+    "include": ["Name", "Description", "ParentId"]
+  }
+}
+Step 3: Update Your Service to Use Named Indexes
+csharp// For autocomplete, specify the index name
+public async Task<List<Category>> AutocompleteCategoriesAsync(string query)
+{
+    var searchDefinition = Builders<Category>.Search.Autocomplete(
+        path => path.Name,
+        query,
+        tokenOrder: AutocompleteTokenOrder.Sequential
+    );
+
+    var searchOptions = new SearchOptions<Category>
+    {
+        IndexName = "autocomplete" // Specify the autocomplete index
+    };
+
+    var pipeline = new[]
+    {
+        PipelineStageDefinitionBuilder.Search(searchDefinition, searchOptions),
+        PipelineStageDefinitionBuilder.Limit<Category>(10)
+    };
+
+    var results = await _collection.Aggregate<Category>(pipeline).ToListAsync();
+    return results;
+}
+Step 4: Testing Your Search
+Sample API Requests
+Basic Search:
+GET /api/category/search?searchTerm=electronics
+Autocomplete:
+GET /api/category/search/autocomplete?query=elec
+Fuzzy Search (handles typos):
+GET /api/category/search/fuzzy?searchTerm=elektronic&maxEdits=2
+Advanced Search with Pagination:
+GET /api/category/search/advanced?name=electronics&description=devices&page=1&pageSize=10
+Search with Highlights:
+GET /api/category/search/highlighted?searchTerm=electronics
+Common Search Patterns
+1. Search with Sorting by Relevance
+csharpvar pipeline = new[]
+{
+    PipelineStageDefinitionBuilder.Search(searchDefinition),
+    PipelineStageDefinitionBuilder.Project<Category, CategorySearchResult>(
+        Builders<Category>.Projection
+            .Include(c => c.Id)
+            .Include(c => c.Name)
+            .MetaSearchScore("searchScore")
+    ),
+    PipelineStageDefinitionBuilder.Sort(
+        Builders<CategorySearchResult>.Sort.Descending(c => c.SearchScore)
+    ),
+    PipelineStageDefinitionBuilder.Limit<CategorySearchResult>(20)
+};
+2. Search with Filters
+csharpvar searchDefinition = Builders<Category>.Search.Compound()
+    .Must(Builders<Category>.Search.Text(c => c.Name, searchTerm))
+    .Filter(Builders<Category>.Search.Equals(c => c.ParentId, parentId));
+3. Multi-Field Compound Search
+csharpvar searchDefinition = Builders<Category>.Search.Compound()
+    .Should(
+        Builders<Category>.Search.Text(c => c.Name, searchTerm, 
+            new SearchOptions { Score = new SearchScoreDefinition<Category>.Boost(3.0) }),
+        Builders<Category>.Search.Text(c => c.Description, searchTerm)
+    )
+    .MinimumShouldMatch(1);
+Performance Tips
+
+Index Only What You Search: Don't use dynamic mapping for production
+Use Stored Source: Reduces data transfer for large documents
+Implement Pagination: Always limit results
+Cache Common Queries: Use Redis or in-memory cache
+Monitor Index Size: Check Atlas metrics regularly
+Use Appropriate Analyzers:
+
+lucene.standard for general text
+lucene.keyword for exact matches
+lucene.whitespace for simple tokenization
+
+
+
+Troubleshooting
+Search returns no results
+
+Verify indexes are built (check Atlas UI)
+Check analyzer configuration
+Ensure fields are indexed correctly
+
+Slow search performance
+
+Review index coverage
+Add compound indexes for common queries
+Implement result caching
+Check cluster tier (M10+ recommended)
+
+Autocomplete not working
+
+Verify separate autocomplete index exists
+Check minGrams and maxGrams settings
+Ensure IndexName is specified in SearchOptions
+
+Additional Resources
+
+MongoDB Atlas Search Documentation
+C# Driver Search Documentation
