@@ -224,3 +224,496 @@ Additional Resources
 
 MongoDB Atlas Search Documentation
 C# Driver Search Documentation
+##################################################################
+I've created a comprehensive MongoDB Atlas Search implementation for your API! Here's what I've provided:
+📦 What's Included:
+
+Controller Methods - 5 search endpoints:
+
+Basic text search
+Autocomplete search
+Fuzzy search (handles typos)
+Advanced compound search with pagination
+Search with highlighting
+
+
+Service Methods - Complete implementations including:
+
+Text search across multiple fields
+Autocomplete with token ordering
+Fuzzy matching with configurable edit distance
+Compound queries with boost scoring
+Phrase search and wildcard search
+Result highlighting and pagination
+
+
+DTOs and Models - Supporting classes for:
+
+Paginated search results
+Search results with relevance scores
+Highlighted text snippets
+
+
+Setup Guide - Complete documentation covering:
+
+Atlas Search index configuration
+Multiple index creation methods
+Testing examples
+Common search patterns
+Performance optimization tips
+
+
+
+🔑 Key Features:
+
+Relevance Scoring: Results are ranked by relevance
+Fuzzy Matching: Handles typos and misspellings
+Autocomplete: Real-time search suggestions
+Highlighting: Shows matched text in context
+Pagination: Efficient handling of large result sets
+Compound Queries: Combine multiple search conditions
+
+⚡ Next Steps:
+
+Create the search indexes in MongoDB Atlas (use the JSON configurations provided)
+Add the service methods to your CategoryService
+Add the controller endpoints to your CategoryController
+Test using the sample API requests in the setup guide
+
+All the code follows your existing architecture pattern and integrates seamlessly with your MongoDB repository structure!
+
+Based on the search results and the MongoDB C# driver documentation, let me explain what PipelineStageDefinitionBuilder.Search is used for:
+What is PipelineStageDefinitionBuilder.Search?
+PipelineStageDefinitionBuilder.Search is used to create MongoDB Atlas Search aggregation pipeline stages in C# MongoDBMongoDB. It's a builder method that helps you construct $search operations in a type-safe, strongly-typed way.
+Key Purpose:
+PipelineStageDefinitionBuilder.Search() is specifically for MongoDB Atlas Search, which is MongoDB's full-text search engine built on Apache Lucene. It allows you to:
+
+Perform full-text searches on your MongoDB data
+Build complex search queries with relevance scoring
+Add search stages to aggregation pipelines
+Integrate Atlas Search into your C# application using a fluent API
+
+// Create a search definition using Builders
+var searchDefinition = Builders<Category>.Search.Text(
+    path => path.Name,
+    "electronics"
+);
+
+// Use PipelineStageDefinitionBuilder.Search to create the pipeline stage
+var pipeline = new[]
+{
+    PipelineStageDefinitionBuilder.Search(searchDefinition),
+    PipelineStageDefinitionBuilder.Limit<Category>(10)
+};
+
+// Execute the aggregation
+var results = await _collection.Aggregate<Category>(pipeline).ToListAsync();
+
+What Happens Behind the Scenes:
+This C# code generates a MongoDB aggregation pipeline that looks like:
+javascript[
+  {
+    $search: {
+      text: {
+        query: "electronics",
+        path: "Name"
+      }
+    }
+  },
+  {
+    $limit: 10
+  }
+]
+
+Key Differences from Regular Queries:
+FeatureRegular Find/FilterAtlas SearchTypeDocument matchingFull-text search with relevanceScoringNo relevance scoresRanked by relevanceFuzzy MatchingNot availableBuilt-in fuzzy searchAutocompleteManual implementationNative supportPerformanceUses regular indexesUses specialized search indexesLocationWorks on any MongoDBRequires MongoDB Atlas
+Important Notes:
+
+Atlas Only: PipelineStageDefinitionBuilder.Search only works with MongoDB Atlas (cloud-hosted MongoDB). It won't work with self-hosted MongoDB instances.
+Requires Search Indexes: Before using Search, you must create Atlas Search indexes on your collections through the Atlas UI or API.
+Part of Aggregation Pipeline: Search is always used as part of an aggregation pipeline, not a standalone query.
+Type-Safe: It provides IntelliSense and compile-time checking for your search queries in C#.
+
+Common Use Cases:
+
+E-commerce: Product search with typo tolerance
+Content Management: Article/blog search with relevance ranking
+User Search: Finding users by name/email with fuzzy matching
+Autocomplete: Real-time search suggestions
+Multi-field Search: Searching across multiple fields with different weights
+
+In your category example, it would enable users to search for categories by name or description with intelligent ranking, typo tolerance, and autocomplete features - much more powerful than basic string matching!
+
+There you go! Now you have the complete CategoryService with all 9 search methods in one file:
+✅ All Search Methods Included:
+
+SearchCategoriesAsync - Basic text search across multiple fields
+AutocompleteCategoriesAsync - Autocomplete with token ordering
+FuzzySearchCategoriesAsync - Fuzzy matching with configurable edit distance
+AdvancedSearchCategoriesAsync - Compound queries with boost scoring + pagination
+SearchWithHighlightsAsync - Result highlighting
+WildcardSearchCategoriesAsync - Wildcard search
+PhraseSearchCategoriesAsync - Phrase search
+SearchWithCustomScoringAsync - Custom relevance scoring
+SearchWithFilterAsync - Search combined with filters
+
+Each method is fully documented with:
+
+Summary comments explaining what it does
+Example use cases
+Important notes (like needing separate indexes)
+
+You can copy this entire service class and replace/extend your existing CategoryService!RetryClaude can make mistakes. Please double-check responses.
+
+Code:
+#######
+using Microsoft.Extensions.Options;
+using MongoDB.Driver;
+using MongoDB.Driver.Search;
+using WebApplication1.Models;
+
+namespace WebApplication1.Services
+{
+    public class CategoryService : MongoDbRepository<Category>
+    {
+        public CategoryService(IOptions<DatabaseSettings> databaseSettings) : base(databaseSettings)
+        {
+        }
+
+        // ============================================================================
+        // EXISTING METHOD - GraphLookup for hierarchical data
+        // ============================================================================
+        public async Task<Category> GetCategoryWithDescendantsAsync(string categoryId)
+        {
+            // Your existing GraphLookup implementation here
+            // ... (keep your existing code)
+        }
+
+        // ============================================================================
+        // ATLAS SEARCH METHODS - NEW IMPLEMENTATIONS
+        // ============================================================================
+
+        /// <summary>
+        /// 1. Basic text search across Name and Description fields
+        /// Example: Search for "electronics" or "home appliances"
+        /// </summary>
+        public async Task<List<Category>> SearchCategoriesAsync(string searchTerm)
+        {
+            var searchDefinition = Builders<Category>.Search.Text(
+                path => new[] { path.Name, path.Description },
+                searchTerm
+            );
+
+            var pipeline = new[]
+            {
+                PipelineStageDefinitionBuilder.Search(searchDefinition),
+                PipelineStageDefinitionBuilder.Limit<Category>(20)
+            };
+
+            var results = await _collection.Aggregate<Category>(pipeline).ToListAsync();
+            return results;
+        }
+
+        /// <summary>
+        /// 2. Autocomplete search for category names
+        /// Example: User types "elec" -> suggests "Electronics", "Electrical", etc.
+        /// NOTE: Requires a separate autocomplete index in Atlas
+        /// </summary>
+        public async Task<List<Category>> AutocompleteCategoriesAsync(string query)
+        {
+            var searchDefinition = Builders<Category>.Search.Autocomplete(
+                path => path.Name,
+                query,
+                tokenOrder: AutocompleteTokenOrder.Sequential
+            );
+
+            var searchOptions = new SearchOptions<Category>
+            {
+                IndexName = "autocomplete" // Must create this index in Atlas
+            };
+
+            var pipeline = new[]
+            {
+                PipelineStageDefinitionBuilder.Search(searchDefinition, searchOptions),
+                PipelineStageDefinitionBuilder.Limit<Category>(10)
+            };
+
+            var results = await _collection.Aggregate<Category>(pipeline).ToListAsync();
+            return results;
+        }
+
+        /// <summary>
+        /// 3. Fuzzy search - handles typos and misspellings
+        /// Example: "elektronics" will match "electronics"
+        /// maxEdits: 1 = one character difference, 2 = two character differences
+        /// </summary>
+        public async Task<List<Category>> FuzzySearchCategoriesAsync(string searchTerm, int maxEdits = 2)
+        {
+            var fuzzyOptions = new SearchFuzzyOptions
+            {
+                MaxEdits = maxEdits,
+                MaxExpansions = 50
+            };
+
+            var searchDefinition = Builders<Category>.Search.Text(
+                path => path.Name,
+                searchTerm,
+                new SearchOptions
+                {
+                    Fuzzy = fuzzyOptions
+                }
+            );
+
+            var pipeline = new[]
+            {
+                PipelineStageDefinitionBuilder.Search(searchDefinition),
+                PipelineStageDefinitionBuilder.Limit<Category>(15)
+            };
+
+            var results = await _collection.Aggregate<Category>(pipeline).ToListAsync();
+            return results;
+        }
+
+        /// <summary>
+        /// 4. Compound search with multiple conditions and pagination
+        /// Example: Search by name (required) and optionally by description
+        /// Includes relevance scoring with boost for name matches
+        /// </summary>
+        public async Task<SearchResultsDto<Category>> AdvancedSearchCategoriesAsync(
+            string name, 
+            string description, 
+            int page = 1, 
+            int pageSize = 10)
+        {
+            var mustClauses = new List<SearchDefinition<Category>>();
+            var shouldClauses = new List<SearchDefinition<Category>>();
+
+            // Must match name if provided
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                mustClauses.Add(Builders<Category>.Search.Text(
+                    path => path.Name,
+                    name,
+                    new SearchOptions
+                    {
+                        Score = new SearchScoreDefinition<Category>.Boost(2.0) // Boost name matches
+                    }
+                ));
+            }
+
+            // Should match description if provided (optional)
+            if (!string.IsNullOrWhiteSpace(description))
+            {
+                shouldClauses.Add(Builders<Category>.Search.Text(
+                    path => path.Description,
+                    description
+                ));
+            }
+
+            var searchDefinition = Builders<Category>.Search.Compound()
+                .Must(mustClauses)
+                .Should(shouldClauses);
+
+            // Count total results
+            var countPipeline = new[]
+            {
+                PipelineStageDefinitionBuilder.Search(searchDefinition, 
+                    new SearchOptions<Category> { Count = new SearchCountOptions { Type = SearchCountType.Total } }),
+                PipelineStageDefinitionBuilder.Group<Category, CountResult>(
+                    c => 1,
+                    g => new CountResult { TotalCount = g.Count() }
+                )
+            };
+
+            // Get paginated results
+            var skip = (page - 1) * pageSize;
+            var resultPipeline = new[]
+            {
+                PipelineStageDefinitionBuilder.Search(searchDefinition),
+                PipelineStageDefinitionBuilder.Skip<Category>(skip),
+                PipelineStageDefinitionBuilder.Limit<Category>(pageSize)
+            };
+
+            var countTask = _collection.Aggregate<CountResult>(countPipeline).FirstOrDefaultAsync();
+            var resultsTask = _collection.Aggregate<Category>(resultPipeline).ToListAsync();
+
+            await Task.WhenAll(countTask, resultsTask);
+
+            var totalCount = countTask.Result?.TotalCount ?? 0;
+            var results = resultsTask.Result;
+
+            return new SearchResultsDto<Category>
+            {
+                Items = results,
+                TotalCount = totalCount,
+                Page = page,
+                PageSize = pageSize,
+                TotalPages = (int)Math.Ceiling(totalCount / (double)pageSize)
+            };
+        }
+
+        /// <summary>
+        /// 5. Search with highlighting to show matched text
+        /// Returns results with highlighted snippets showing where the match occurred
+        /// </summary>
+        public async Task<List<CategorySearchResult>> SearchWithHighlightsAsync(string searchTerm)
+        {
+            var searchDefinition = Builders<Category>.Search.Text(
+                path => new[] { path.Name, path.Description },
+                searchTerm
+            );
+
+            var highlightOptions = new SearchHighlightOptions<Category>
+            {
+                Path = c => new[] { c.Name, c.Description },
+                MaxNumPassages = 3
+            };
+
+            var searchOptions = new SearchOptions<Category>
+            {
+                Highlight = highlightOptions
+            };
+
+            var pipeline = new[]
+            {
+                PipelineStageDefinitionBuilder.Search(searchDefinition, searchOptions),
+                PipelineStageDefinitionBuilder.Limit<Category>(20),
+                PipelineStageDefinitionBuilder.Project<Category, CategorySearchResult>(
+                    Builders<Category>.Projection
+                        .Include(c => c.Id)
+                        .Include(c => c.Name)
+                        .Include(c => c.Description)
+                        .Include(c => c.ParentId)
+                        .MetaSearchScore("searchScore")
+                        .MetaSearchHighlights("highlights")
+                )
+            };
+
+            var results = await _collection.Aggregate<CategorySearchResult>(pipeline).ToListAsync();
+            return results;
+        }
+
+        /// <summary>
+        /// 6. Wildcard search for partial matches
+        /// Example: "ele*" matches "electronics", "electrical", "element"
+        /// Use ? for single character wildcard, * for multiple characters
+        /// </summary>
+        public async Task<List<Category>> WildcardSearchCategoriesAsync(string pattern)
+        {
+            var searchDefinition = Builders<Category>.Search.Wildcard(
+                path => path.Name,
+                pattern,
+                allowAnalyzedField: true
+            );
+
+            var pipeline = new[]
+            {
+                PipelineStageDefinitionBuilder.Search(searchDefinition),
+                PipelineStageDefinitionBuilder.Limit<Category>(20)
+            };
+
+            var results = await _collection.Aggregate<Category>(pipeline).ToListAsync();
+            return results;
+        }
+
+        /// <summary>
+        /// 7. Phrase search for exact phrase matching
+        /// Example: "home appliances" will match that exact phrase
+        /// slop: allows words between the phrase terms
+        /// </summary>
+        public async Task<List<Category>> PhraseSearchCategoriesAsync(string phrase)
+        {
+            var searchDefinition = Builders<Category>.Search.Phrase(
+                path => path.Description,
+                phrase,
+                slop: 2 // Allows up to 2 words between the phrase terms
+            );
+
+            var pipeline = new[]
+            {
+                PipelineStageDefinitionBuilder.Search(searchDefinition),
+                PipelineStageDefinitionBuilder.Limit<Category>(15)
+            };
+
+            var results = await _collection.Aggregate<Category>(pipeline).ToListAsync();
+            return results;
+        }
+
+        /// <summary>
+        /// 8. Search with custom relevance scoring
+        /// Boosts results based on multiple factors
+        /// </summary>
+        public async Task<List<CategorySearchResult>> SearchWithCustomScoringAsync(string searchTerm)
+        {
+            var searchDefinition = Builders<Category>.Search.Compound()
+                .Should(
+                    // Name matches get 3x score boost
+                    Builders<Category>.Search.Text(
+                        path => path.Name,
+                        searchTerm,
+                        new SearchOptions
+                        {
+                            Score = new SearchScoreDefinition<Category>.Boost(3.0)
+                        }
+                    ),
+                    // Description matches get normal score
+                    Builders<Category>.Search.Text(
+                        path => path.Description,
+                        searchTerm
+                    )
+                )
+                .MinimumShouldMatch(1);
+
+            var pipeline = new[]
+            {
+                PipelineStageDefinitionBuilder.Search(searchDefinition),
+                PipelineStageDefinitionBuilder.Limit<Category>(20),
+                PipelineStageDefinitionBuilder.Project<Category, CategorySearchResult>(
+                    Builders<Category>.Projection
+                        .Include(c => c.Id)
+                        .Include(c => c.Name)
+                        .Include(c => c.Description)
+                        .Include(c => c.ParentId)
+                        .MetaSearchScore("searchScore")
+                ),
+                PipelineStageDefinitionBuilder.Sort(
+                    Builders<CategorySearchResult>.Sort.Descending(c => c.SearchScore)
+                )
+            };
+
+            var results = await _collection.Aggregate<CategorySearchResult>(pipeline).ToListAsync();
+            return results;
+        }
+
+        /// <summary>
+        /// 9. Search with filters - Combine search with exact filters
+        /// Example: Search for "electronics" but only in specific parent category
+        /// </summary>
+        public async Task<List<Category>> SearchWithFilterAsync(string searchTerm, string parentId)
+        {
+            var searchDefinition = Builders<Category>.Search.Compound()
+                .Must(Builders<Category>.Search.Text(c => c.Name, searchTerm))
+                .Filter(Builders<Category>.Search.Equals(c => c.ParentId, parentId));
+
+            var pipeline = new[]
+            {
+                PipelineStageDefinitionBuilder.Search(searchDefinition),
+                PipelineStageDefinitionBuilder.Limit<Category>(20)
+            };
+
+            var results = await _collection.Aggregate<Category>(pipeline).ToListAsync();
+            return results;
+        }
+
+        // ============================================================================
+        // HELPER CLASSES
+        // ============================================================================
+
+        private class CountResult
+        {
+            public long TotalCount { get; set; }
+        }
+    }
+}
+
+Code above is offered by AI not tested. It can give error from driver differences or wrong implementations.
